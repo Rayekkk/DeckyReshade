@@ -58,15 +58,23 @@ def _describe(url, e):
     return f"could not reach {host} ({getattr(e, 'reason', e)})"
 
 
+def _complete(url, response, count):
+    """A connection dropped mid-body ends the read quietly: compare with what the server announced."""
+    expected = response.getheader("Content-Length")
+    if expected and expected.isdigit() and count != int(expected):
+        raise NetError(f"the download of {url} stopped early")
+
+
 def get(url, limit, headers=None):
     """The body of url, at most limit bytes."""
     try:
         with _open(url, headers) as response:
             data = response.read(limit + 1)
+            if len(data) > limit:
+                raise NetError(f"{url} sent more data than expected")
+            _complete(url, response, len(data))  # a cut-short list (RenoDX, shaders) would be kept for a day
     except (urllib.error.URLError, OSError, http.client.HTTPException) as e:
         raise NetError(_describe(url, e)) from e
-    if len(data) > limit:
-        raise NetError(f"{url} sent more data than expected")
     return data
 
 
@@ -76,16 +84,13 @@ def download(url, dest, limit, sha256=None):
     digest, count = hashlib.sha256(), 0
     try:
         with _open(url) as response, open(tmp, "wb") as f:
-            expected = response.getheader("Content-Length")
             while chunk := response.read(CHUNK):
                 count += len(chunk)
                 if count > limit:
                     raise NetError(f"{url} is larger than expected")
                 digest.update(chunk)
                 f.write(chunk)
-        # a connection dropped mid-file ends the read quietly; files without a known hash need this check
-        if expected and expected.isdigit() and count != int(expected):
-            raise NetError(f"the download of {url} stopped early")
+            _complete(url, response, count)  # files without a known hash (RenoDX) depend on it
         if sha256 and digest.hexdigest() != sha256:
             raise NetError(f"{url} does not match its known SHA-256")
         os.replace(tmp, dest)

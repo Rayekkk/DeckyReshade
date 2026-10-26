@@ -43,5 +43,15 @@ class Download(unittest.TestCase):
             self.assertEqual(os.listdir(os.path.dirname(dest)), [])
 
 
+class Get(unittest.TestCase):
+    def test_only_complete_bodies(self):
+        with mock.patch.object(N, "_open", return_value=_Response(b"abc", 3)):
+            self.assertEqual(N.get("https://x/list", 10), b"abc")
+        for response in (_Response(b"ab", 3),  # cut short: a list with only part of its rows
+                         _Response(b"x" * 11)):  # more than allowed
+            with mock.patch.object(N, "_open", return_value=response):
+                self.assertRaises(N.NetError, N.get, "https://x/list", 10)
+
+
 if __name__ == "__main__":
     unittest.main()
