@@ -1,0 +1,17 @@
+DeckyReshade
+Copyright (c) 2026 Rayekkk
+
+The plugin code (main.py, reshade_*.py, src/, scripts/) is licensed under the BSD 3-Clause License, see LICENSE.
+
+third_party/decky-api contains the licence and source of @decky/api, which is compiled into dist/index.js.
+
+This package does NOT contain ReShade, any shader or any Microsoft file. They are downloaded by the user, on their
+device:
+  * ReShade (ReShade32.dll, ReShade64.dll) from https://reshade.me, by crosire, under ReShade's own licence,
+  * d3dcompiler_47.dll (Microsoft's HLSL compiler) from Mozilla's fxc2 repository on GitHub,
+  * the AutoHDR add-on (AutoHDR.addon32/64) from EndlesslyFlowering/AutoHDR-ReShade releases on GitHub, MIT licence,
+  * RenoDX mods (renodx-*.addon32/64) from their authors' GitHub Pages or releases, as linked by the RenoDX wiki,
+  * shader packages from their authors' GitHub repositories, as listed by ReShade's installer
+    (EffectPackages.ini in crosire/reshade-shaders), each under its own licence.
+
+This project is not affiliated with or endorsed by ReShade, crosire, Microsoft or Valve.
