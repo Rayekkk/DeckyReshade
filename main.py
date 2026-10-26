@@ -132,9 +132,11 @@ class Plugin:
         folder = os.path.join(self.reshade_root, reshade_release.variant(version, self.release.get("addon", False)))
         return version if reshade_release.is_complete(folder) else None
 
-    def _autohdr_ready(self):
+    def _autohdr_ready(self, packages=None):
+        """packages: the installed shader packages, when the caller already has them."""
+        packages = reshade_shaders.installed(self.shaders_root) if packages is None else packages
         return all(os.path.isfile(reshade_release.autohdr_path(self.reshade_root, b)) for b in (32, 64)) and \
-            AUTOHDR_PACKAGE in reshade_shaders.installed(self.shaders_root)
+            AUTOHDR_PACKAGE in packages
 
     def _sources(self, api, bits, autohdr=False, renodx_file=None, version=None, addon=None):
         version = version or self.release["version"]
@@ -157,6 +159,7 @@ class Plugin:
     async def get_state(self) -> dict:
         await _ready.wait()
         latest, installed = self.release.get("latest"), self._installed()
+        packages = reshade_shaders.installed(self.shaders_root)  # read once: the panel polls this during downloads
         return {
             "version": VERSION,
             "reshade": {"installed": installed, "addon": self.release.get("addon", False), "latest": latest,
@@ -164,7 +167,7 @@ class Plugin:
                                                  reshade_release.version_tuple(latest) >
                                                  reshade_release.version_tuple(installed)),
                         "check_error": self.release.get("check_error", ""),
-                        "versions": reshade_release.VERSIONS, "autohdr_ready": self._autohdr_ready()},
+                        "versions": reshade_release.VERSIONS, "autohdr_ready": self._autohdr_ready(packages)},
             "job": self.job,
             "settings": self.settings,
             "launch_words": {api: reshade_install.launch_word(api) for api in reshade_games.APIS},
@@ -178,7 +181,7 @@ class Plugin:
             "enabled": [{"appid": a, "name": e["name"], "api": e["api"], "exe": e["exe"], "bits": e["bits"],
                          "autohdr": bool(e.get("autohdr")), "renodx": e.get("renodx", "")}
                         for a, e in sorted(self.manifest.entries.items(), key=lambda i: i[1]["name"].lower())],
-            "shaders": {"installed": reshade_shaders.installed(self.shaders_root), "packages": self.packages},
+            "shaders": {"installed": packages, "packages": self.packages},
         }
 
     def _save_settings(self):
