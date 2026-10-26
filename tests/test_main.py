@@ -221,6 +221,14 @@ class Flow(unittest.TestCase):
             with open(report["path"], encoding="utf-8") as f:
                 self.assertIn("Failed to compile x.fx", f.read())
 
+            # the RenoDX list cannot be refreshed: the one there stays, with the reason shown
+            with mock.patch.object(reshade_renodx, "fetch_list",
+                                   side_effect=reshade_renodx.RenoDXError("Could not load the RenoDX mod list")):
+                state = await p.refresh_renodx()
+            self.assertEqual(state["renodx"]["error"], "Could not load the RenoDX mod list")
+            self.assertEqual(state["renodx"]["count"], len(reshade_renodx.parse(WIKI)))
+            self.assertEqual([g["renodx"] for g in state["games"] if g["name"] == "God of War"], ["working"])
+
             # downloaded files cannot go while games use them
             state = await p.remove_data()
             self.assertIn("Turn ReShade off", state["job"]["error"])

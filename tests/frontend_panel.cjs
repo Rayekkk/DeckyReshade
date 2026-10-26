@@ -154,5 +154,32 @@ async function open(h, s) {
   assert.ok(enable, 'changing the API sets the game up again');
   assert.deepEqual(enable.args.slice(0, 5), [80, 'GoW.exe', 'd3d11', false, '']);
 
-  console.log('Frontend panel checks passed: main page, This game, game list and page, reopening, standard build.');
+  // First-run wizard: a failed call goes back to the summary to try again; a finished setup shows how to use it,
+  // then the main page.
+  const w = harness();
+  const fresh = state({ reshade: { ...state().reshade, installed: null } });
+  const click = (t, label) => {
+    const b = all(t).find(n => n.type === 'ButtonItem' && [].concat(n.props.children).includes(label));
+    assert.ok(b, `button ${label}`); assert.ok(!b.props.disabled, `${label} enabled`); b.props.onClick();
+  };
+  tree = await open(w, fresh);
+  click(tree, 'Start setup'); tree = w.render();
+  click(tree, 'With add-ons'); tree = w.render();
+  click(tree, 'Next'); tree = w.render();
+  assert.ok(find(tree, 'ToggleField', 'Download AutoHDR'), 'AutoHDR step for the add-on build');
+  click(tree, 'Next'); tree = w.render();
+  click(tree, 'Download and set up'); w.render();
+  const failed = w.calls.find(c => c.name === 'setup');
+  assert.deepEqual(failed.args, [true, 'latest', true]);
+  failed.settled = true; failed.reject(new Error('backend restarting')); await settle();
+  w.render(); tree = w.render();
+  click(tree, 'Download and set up');  // back on the summary, enabled: not stuck on "Starting…"
+  w.render();
+  await w.respond('setup', state());
+  w.render(); tree = w.render();
+  assert.ok(find(tree, 'Field', 'How to use it'), 'the how-to page after setup');
+  click(tree, 'Done'); tree = w.render();
+  assert.equal(labels(tree, 'Field')[0], 'Games');
+
+  console.log('Frontend panel checks passed: main page, This game, game list and page, reopening, standard build, setup wizard.');
 })().catch(e => { console.error(e); process.exit(1); });
