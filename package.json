@@ -1,7 +1,7 @@
 {
   "name": "deckyreshade",
   "version": "0.1.0",
-  "description": "DeckyLoader plugin: ReShade for Steam games under Proton, set up and kept up to date from Gaming Mode",
+  "description": "DeckyLoader plugin: ReShade for Steam and non-Steam games under Proton, set up and kept up to date from Gaming Mode",
   "license": "BSD-3-Clause",
   "type": "module",
   "scripts": {

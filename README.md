@@ -35,7 +35,7 @@ update. DeckyReshade does all of that from the Quick Access Menu and keeps track
 | **Safe launch options** | `WINEDLLOVERRIDES` entries are merged with what is already there and restored exactly when you turn ReShade off; [Decky Launch Options](https://github.com/Rayekkk/DeckyLaunchOptions) gets its own ReShade tab |
 | **Never fails silently** | Each game shows when ReShade last started and its errors; if it did not start twice in a row, you are told what to change |
 | **Logs and report** | ReShade's log per game, the plugin's log, and a one-file report for bug reports |
-| **Clean rollback** | Only files the plugin wrote are removed (checked by SHA-256); your ReShade settings and presets stay |
+| **Clean rollback** | Only files the plugin wrote are removed (checked by SHA-256); your ReShade settings and presets stay (only an AutoHDR starter preset you never changed goes with AutoHDR) |
 | **Updates** | **About → Check for updates** downloads a newer release from GitHub to your Downloads folder and checks it |
 
 ## Requirements
@@ -196,7 +196,8 @@ files mention are read too, and the engine DLLs beside an exe that says nothing 
 Next to the executable go ReShade under the API's name, `d3dcompiler_47.dll` for the same bitness (unless the
 game ships its own), the add-ons in use and a `ReShade.ini` pointing at the shared shader folders. Files are only
 ever added: a file of the same name that is not ours stops the setup, every file written is recorded with its
-SHA-256 and removed only while it still matches. `ReShade.ini`, presets and `ReShade.log` stay as your settings.
+SHA-256 and removed only while it still matches. `ReShade.ini`, your presets and `ReShade.log` stay as your
+settings; the first AutoHDR preset the plugin writes goes with AutoHDR while you have not changed it.
 A ReShade update replaces only the files that still match what was installed.
 
 After each session the plugin checks that ReShade wrote its log during it; a game where it did not twice in a

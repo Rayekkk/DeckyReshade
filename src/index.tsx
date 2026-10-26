@@ -317,7 +317,7 @@ const Wizard: FC<{ state: State; busy: boolean; run: (call: () => Promise<State>
             <li>Start a game and open this menu: the game is picked for you.</li>
             <li>Turn on <b>ReShade in this game</b>{w.autohdr ? " (and AutoHDR, if you want it)" : ""}.</li>
             <li>Restart the game and press <b>Home</b> to open ReShade. No keyboard? Map Home to a back button in the game's controller layout.</li>
-            <li>If ReShade does not appear, the game's section shows why and lets you pick another executable or API.</li>
+            <li>If ReShade does not appear, the game's page shows why and lets you pick another executable or API.</li>
           </ol>} />
         </PanelSectionRow>
         <PanelSectionRow><ButtonItem layout="below" onClick={() => { set({ step: 11 }); onDone(); }}>Done</ButtonItem></PanelSectionRow>
