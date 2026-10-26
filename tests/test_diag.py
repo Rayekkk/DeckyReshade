@@ -6,6 +6,7 @@
 import os
 import tempfile
 import unittest
+from unittest import mock
 
 import _harness  # noqa: F401
 import reshade_diag as D
@@ -32,6 +33,16 @@ class ReshadeLog(unittest.TestCase):
         self.assertEqual(summary["warnings"], 1)
         self.assertEqual(summary["errors"], ['Failed to compile "Z:\\s\\Shaders\\Broken.fx":',
                                              "Failed to create effect runtime."])
+
+    def test_long_log_shows_its_newest_errors(self):
+        folder = tempfile.mkdtemp()
+        filler = "".join(f"t [1] | INFO  | line {i}\n" for i in range(200))
+        with open(os.path.join(folder, D.LOG), "w", encoding="utf-8") as f:
+            f.write(SAMPLE.splitlines()[0] + "\nt [1] | ERROR | Old error\n" + filler + "t [1] | ERROR | New error\n")
+        with mock.patch.object(D, "MAX_READ", 1000):
+            summary = D.reshade_log(folder)
+        self.assertEqual(summary["version"], "6.8.0")  # from the first line
+        self.assertEqual(summary["errors"], ["New error"])  # the old one is outside the end that was read
 
     def test_tail_and_report(self):
         path = os.path.join(tempfile.mkdtemp(), "plugin.log")

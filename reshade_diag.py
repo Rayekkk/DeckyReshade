@@ -31,16 +31,25 @@ def tail(path, lines=200):
 
 
 def reshade_log(folder):
-    """Summary of a game's ReShade.log: {found, modified (epoch s), version, errors: [last few], warnings: count}."""
+    """Summary of a game's ReShade.log: {found, modified (epoch s), version, errors: [last few], warnings: count}.
+
+    The version is on the first line; errors and warnings come from the last MAX_READ bytes, so a long log still
+    shows its newest ones."""
     path = os.path.join(folder, LOG)
     try:
         modified = os.path.getmtime(path)
         with open(path, "rb") as f:
-            text = f.read(MAX_READ).decode("utf-8", "replace")
+            first = f.read(4096).decode("utf-8", "replace")
+            size = f.seek(0, os.SEEK_END)
+            f.seek(max(0, size - MAX_READ))
+            last = f.read()
     except OSError:
         return {"found": False, "modified": 0, "version": "", "errors": [], "warnings": 0}
-    errors, warnings, version = [], 0, ""
-    for line in text.splitlines():
+    if size > MAX_READ:
+        last = last.split(b"\n", 1)[-1]  # the first line read is cut in half
+    version = next((m.group(1) for m in map(_VERSION.search, first.splitlines()) if m), "")
+    errors, warnings = [], 0
+    for line in last.decode("utf-8", "replace").splitlines():
         parts = [p.strip() for p in line.split("|", 2)]
         if len(parts) < 3:
             continue
@@ -49,8 +58,6 @@ def reshade_log(folder):
             errors.append(message)
         elif level == "WARN":
             warnings += 1
-        elif not version and (match := _VERSION.search(message)):
-            version = match.group(1)
     return {"found": True, "modified": modified, "version": version, "errors": errors[-5:], "warnings": warnings}
 
 
