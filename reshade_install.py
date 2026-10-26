@@ -102,9 +102,19 @@ def _env_key(word):
     return word.split("=", 1)[0]
 
 
+def _game_command_start(words):
+    """Where the command that starts the game begins: after the last && / || / ; before %command% (an earlier
+    command, mkdir -p x && %command%, must not get the game's variables)."""
+    if "%command%" not in words:
+        return 0
+    before = words[:words.index("%command%")]
+    return max((i + 1 for i, w in enumerate(before) if w in ("&&", "||", ";") or w.endswith(";")), default=0)
+
+
 def with_overrides(options, ours, env=()):
-    """Launch options with our DLL overrides merged in and our environment words (DXVK_HDR=1) next to them;
-    %command% added when the options had none. Another value for one of our variables is replaced."""
+    """Launch options with our DLL overrides merged in and our environment words (DXVK_HDR=1) next to them, on the
+    command that starts the game; %command% added when the options had none. Another value for one of our variables
+    is replaced."""
     keys = {_env_key(w) for w in env}
     words = [w for w in (options or "").split() if _env_key(w) not in keys]
     # words are split on spaces; a quoted value holding one would be cut apart and rejoined wrongly (an apostrophe in
@@ -112,19 +122,18 @@ def with_overrides(options, ours, env=()):
     if any(w.count('"') % 2 or ("='" in w and w.count("'") % 2) for w in words):
         raise InstallError("these launch options quote text with spaces in it, which the plugin will not edit: turn "
                            "off \"Set launch options automatically\" and add the WINEDLLOVERRIDES entries yourself")
+    if "%command%" not in words:
+        words = ["%command%"] + words  # the old options were the game's arguments
+    start = _game_command_start(words)
     names = {e.split("=", 1)[0].lower() for e in ours}
-    for i, word in enumerate(words):
-        match = _OVERRIDES.match(word)
+    for i in range(start, len(words)):
+        match = _OVERRIDES.match(words[i])
         if match:
             kept = _without_dlls([e for e in match.group(2).split(";") if e], names)
             words[i:i + 1] = [_overrides_word(kept + ours), *env]
             break
     else:
-        if "%command%" not in words:
-            words = ["%command%"] + words  # the old options were the game's arguments
-        words[0:0] = [_overrides_word(ours), *env]
-    if "%command%" not in words:
-        words.append("%command%")
+        words[start:start] = [_overrides_word(ours), *env]
     return " ".join(words)
 
 

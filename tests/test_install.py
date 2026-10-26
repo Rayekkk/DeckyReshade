@@ -24,6 +24,17 @@ class LaunchOptions(unittest.TestCase):
             self.assertIn("d3dcompiler_47=n,b;dxgi=n,b", applied)
             self.assertEqual(I.without_overrides(applied, original, applied, OURS), original, original)
 
+    def test_variables_go_to_the_command_that_starts_the_game(self):
+        for original, applied in (
+                ("mkdir -p /tmp/x && %command%",
+                 'mkdir -p /tmp/x && WINEDLLOVERRIDES="d3dcompiler_47=n,b;dxgi=n,b" %command%'),
+                ('sh -c "x"; gamemoderun %command% -dx11',
+                 'sh -c "x"; WINEDLLOVERRIDES="d3dcompiler_47=n,b;dxgi=n,b" gamemoderun %command% -dx11'),
+                ("true || false ; %command%",
+                 'true || false ; WINEDLLOVERRIDES="d3dcompiler_47=n,b;dxgi=n,b" %command%')):
+            self.assertEqual(I.with_overrides(original, OURS), applied)
+            self.assertEqual(I.without_overrides(applied + " -x", original, applied, OURS), original + " -x")
+
     def test_merges_into_an_existing_override(self):
         self.assertEqual(I.with_overrides(f"{FSR4} %command%", OURS),
                          'WINEDLLOVERRIDES="amdxc64=n,b;d3dcompiler_47=n,b;dxgi=n,b" %command%')
