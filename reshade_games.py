@@ -331,6 +331,7 @@ def inspect(game):
     install_dir = game["install_dir"]
     base_depth = install_dir.rstrip(os.sep).count(os.sep)
     found, anticheat, running = [], False, running_exes()
+    folder = os.path.basename(install_dir.rstrip(os.sep)).lower()
     for root, dirs, files in os.walk(install_dir):
         names = [n.lower() for n in dirs + files]
         if any(marker in n for n in names for marker in ANTICHEAT):
@@ -353,7 +354,8 @@ def inspect(game):
             # handler beside the game), then the one a shortcut names
             candidate = {"exe": rel, "bits": info["bits"]}
             score = _score(rel, size, game["name"])
-            if any(p == rel.lower() or p.endswith("/" + rel.lower()) for p in running):
+            # under Proton the path is S:/steamapps/common/<folder>/<rel>: the folder keeps another game's Game.exe out
+            if any(p.endswith(f"/{folder}/{rel.lower()}") for p in running):
                 candidate["running"] = True
                 score += 2e9
             elif rel == game.get("exe"):

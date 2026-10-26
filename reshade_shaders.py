@@ -162,11 +162,14 @@ def install(root, package):
         if not any(f.lower().endswith(".fx") for f in files):
             raise ShaderError(f"{package['name']} contains no effect files.")
         index = _load_index(root)
+        stale = set(index.get(package["id"], [])) - set(files)
+        # recorded before the files move in: an interrupted install leaves nothing removing the package would miss
+        index[package["id"]] = sorted(set(files) | stale)
+        _save_index(root, index)
         for rel in files:
             dst = os.path.join(root, *rel.split("/"))
             os.makedirs(os.path.dirname(dst), exist_ok=True)
             os.replace(os.path.join(part, "files", *rel.split("/")), dst)
-        stale = set(index.get(package["id"], [])) - set(files)
         index[package["id"]] = sorted(files)
         _drop(root, stale, index)
         _save_index(root, index)

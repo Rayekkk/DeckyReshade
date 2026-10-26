@@ -417,10 +417,11 @@ class Plugin:
         mod = self._mod(installed or renodx) if installed or renodx else auto
         return {"ok": True, "candidates": candidates, "exe": chosen["exe"], "bits": chosen["bits"],
                 "detected_api": api, "detected_how": how, "anticheat": found["anticheat"],
-                "nonsteam": game.get("nonsteam", False), "enabled": entry is not None,
+                "enabled": entry is not None,
                 "api": entry["api"] if entry else None, "autohdr": bool(entry and entry.get("autohdr")),
                 "renodx": {"installed": installed, "auto": auto["name"] if auto else "",
-                           "mod": {**mod, "files": sorted(mod["files"])} if mod else None},
+                           "mod": {**mod, "files": sorted(mod["files"]),
+                                   "host": reshade_renodx.host(mod["files"].get(str(chosen["bits"])))} if mod else None},
                 "log": reshade_diag.reshade_log(folder)}
 
     async def enable_game(self, appid: int, exe: str, api: str, autohdr: bool, renodx: str,
@@ -465,12 +466,14 @@ class Plugin:
             try:
                 renodx_file = None
                 if mod:
+                    decky.logger.info(f"RenoDX: downloading {mod['files'].get(str(info['bits']))}")
                     renodx_file = os.path.basename(
                         await asyncio.to_thread(reshade_renodx.download, mod, info["bits"], self.renodx_root))
                 if autohdr:
                     await asyncio.to_thread(self._ensure_autohdr)
-                if entry and (entry["exe"], entry["api"], bool(entry.get("autohdr")), entry.get("renodx", "")) != \
-                        (exe, api, bool(autohdr), renodx):
+                # a renamed RenoDX snapshot counts as a change too, or the old add-on would stay beside the new one
+                if entry and (entry["exe"], entry["api"], bool(entry.get("autohdr")), entry.get("renodx", ""),
+                              entry.get("renodx_file")) != (exe, api, bool(autohdr), renodx, renodx_file):
                     options = (await asyncio.to_thread(reshade_install.disable, self.manifest, appid,
                                                        options))["launch_options"]
                 options = await asyncio.to_thread(
@@ -536,15 +539,18 @@ class Plugin:
 
     # ---- logs ----------------------------------------------------------------------------------------------------
 
-    async def get_logs(self, appid: int = 0) -> dict:
-        """The end of the plugin's log and, for a game, of its ReShade.log."""
+    async def get_logs(self, appid: int = 0, exe: str = "") -> dict:
+        """The end of the plugin's log and, for a game, of its ReShade.log: beside ReShade when set up, else beside
+        exe (the executable the panel shows)."""
         await _ready.wait()
         folder = ""
         entry = self.manifest.entries.get(appid)
         if entry:
             folder = entry["target_dir"]
-        elif (game := self._game(appid)) and (found := (await self.get_game(appid)))["ok"]:
-            folder = os.path.dirname(os.path.join(game["install_dir"], found["exe"]))
+        elif (game := self._game(appid)) and exe:
+            install_dir = os.path.realpath(game["install_dir"])
+            path = os.path.realpath(os.path.join(install_dir, exe))
+            folder = os.path.dirname(path) if path.startswith(install_dir + os.sep) else ""
         return {"plugin": reshade_diag.tail(reshade_diag.plugin_log_path(decky), 300),
                 "reshade": reshade_diag.tail(os.path.join(folder, reshade_install.LOG), 200) if folder else ""}
 

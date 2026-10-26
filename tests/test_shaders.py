@@ -113,6 +113,21 @@ class InstallRemove(unittest.TestCase):
         self.install(self.std, {"r/Shaders/Keep.fx": "y"})
         self.assertEqual(sorted(os.listdir(os.path.join(self.root, "Shaders"))), ["Keep.fx"])
 
+    def test_interrupted_install_leaves_no_untracked_files(self):
+        real_replace, moved = os.replace, []
+
+        def replace(src, dst):
+            if "Shaders" in dst and moved:
+                raise OSError("disk full")
+            real_replace(src, dst)
+            moved.append(dst)
+
+        with mock.patch.object(S.os, "replace", replace):
+            self.assertRaises(S.ShaderError, self.install, self.std, {"r/Shaders/A.fx": "x", "r/Shaders/B.fx": "x"})
+        self.assertEqual(S.installed(self.root), ["standard-effects"])  # recorded before the files moved in
+        S.remove(self.root, self.std["id"])
+        self.assertFalse(os.path.exists(os.path.join(self.root, "Shaders", "A.fx")))
+
     def test_bad_download_changes_nothing(self):
         self.install(self.std, {"r/Shaders/Keep.fx": "x"})
         for files in ({"r/README.md": "no effects"}, None):

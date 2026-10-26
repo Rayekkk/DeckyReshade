@@ -53,6 +53,16 @@ def trusted(url):
                                         (host == "github.com" and "/releases/download/" in parts.path))
 
 
+def host(url):
+    """Where a mod's file comes from, shown before it is installed: 'oopydoopy.github.io', 'github.com/mqhaji' (whose
+    releases), or '' for none."""
+    if not url:
+        return ""
+    parts = urllib.parse.urlsplit(url)
+    owner = parts.path.strip("/").split("/")[0] if parts.hostname == "github.com" else ""
+    return f"{parts.hostname}/{owner}" if owner else parts.hostname or ""
+
+
 def _status(cell):
     note = _NOTE.search(cell)
     if "white_check_mark" in cell or "✅" in cell:  # the shortcode or the emoji itself

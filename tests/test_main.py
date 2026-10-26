@@ -165,6 +165,16 @@ class Flow(unittest.TestCase):
                 self.assertEqual(game_options, 'WINEDLLOVERRIDES="d3dcompiler_47=n,b;dxgi=n,b" %command% -novid')
                 self.assertFalse(os.path.exists(os.path.join(self.game_dir, "renodx-godofwar.addon64")))
                 self.assertFalse((await p.enable_game(70, "Game.exe", "dxgi", False, "Not In The List", ""))["ok"])
+                self.assertEqual((await p.get_game(70))["renodx"]["mod"]["host"], "clshortfuse.github.io")
+
+                # the author renames the snapshot: updating takes the old file out instead of leaving two mods
+                res = await p.enable_game(70, "Game.exe", "dxgi", False, "God of War (2018)", game_options)
+                mod = p._mod("God of War (2018)")
+                mod["files"]["64"] = mod["files"]["64"].replace("renodx-godofwar", "renodx-gow")
+                res = await p.enable_game(70, "Game.exe", "dxgi", False, "God of War (2018)", res["launch_options"])
+                self.assertEqual(sorted(n for n in os.listdir(self.game_dir) if n.startswith("renodx")),
+                                 ["renodx-gow.addon64"])
+                game_options = (await p.enable_game(70, "Game.exe", "dxgi", False, "", res["launch_options"]))["launch_options"]
 
                 # a non-Steam game: Steam's app details have no launch options, shortcuts.vdf has them
                 res = await p.enable_game(self.emu_appid, "eden.exe", "opengl32", False, "", "")
@@ -216,10 +226,14 @@ class Flow(unittest.TestCase):
             self.assertIn("Turn ReShade off", state["job"]["error"])
             res = await p.disable_game(70, game_options)
             self.assertEqual(res["launch_options"], "-novid")
-            self.assertEqual(sorted(os.listdir(self.game_dir)), ["Game.exe", "ReShade.ini", "ReShade.log",
-                                                                   "ReShadePreset.ini"])
+            self.assertEqual(sorted(os.listdir(self.game_dir)), ["Game.exe", "ReShade.ini", "ReShade.log"])
             res = await p.disable_game(self.emu_appid, "")
             self.assertEqual(res["launch_options"], "-fullscreen")
+            # a game without ReShade: the log beside the executable the panel shows, never outside the game
+            with open(os.path.join(self.emu_dir, "ReShade.log"), "w") as f:
+                f.write("old run")
+            self.assertEqual((await p.get_logs(self.emu_appid, "eden.exe"))["reshade"], "old run")
+            self.assertEqual((await p.get_logs(self.emu_appid, "../../escape.exe"))["reshade"], "")
 
             # a game Decky Launch Options runs: files go in, its launch options are left to DLO
             res = await p.enable_game(70, "Game.exe", "dxgi", False, "", "~/.dlo/run %command%")

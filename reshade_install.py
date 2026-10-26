@@ -9,7 +9,7 @@ Rules that make rollback safe:
   * the manifest records every file we wrote with its sha256, and we delete only files whose hash still matches,
   * ReShade.ini is created when missing and otherwise only gets our shader folders added; it holds the user's
     ReShade settings, so it stays in the game folder on removal (with ReShadePreset.ini and ReShade.log, which
-    ReShade writes),
+    ReShade writes); a first preset written for AutoHDR is removed with it while nobody has changed it,
   * launch options: our entries go into WINEDLLOVERRIDES next to whatever is already there (the user's, another
     plugin's). On removal the original comes back when nobody edited the options since, otherwise only our entries
     are taken out.
@@ -107,8 +107,9 @@ def with_overrides(options, ours, env=()):
     %command% added when the options had none. Another value for one of our variables is replaced."""
     keys = {_env_key(w) for w in env}
     words = [w for w in (options or "").split() if _env_key(w) not in keys]
-    # words are split on spaces; a quoted value holding one would be cut apart and rejoined wrongly
-    if any(w.count('"') % 2 or w.count("'") % 2 for w in words):
+    # words are split on spaces; a quoted value holding one would be cut apart and rejoined wrongly (an apostrophe in
+    # a plain argument, -name=Rayek's, is no quote)
+    if any(w.count('"') % 2 or ("='" in w and w.count("'") % 2) for w in words):
         raise InstallError("these launch options quote text with spaces in it, which the plugin will not edit: turn "
                            "off \"Set launch options automatically\" and add the WINEDLLOVERRIDES entries yourself")
     names = {e.split("=", 1)[0].lower() for e in ours}
@@ -295,8 +296,11 @@ def enable(manifest, game, exe, api, bits, sources, shaders_dir, launch_options,
                 _write_text(ini, updated)
         else:
             _write_text(ini, ini_text(shaders_dir))
-        if preset and not os.path.exists(os.path.join(target, PRESET)):
-            _write_text(os.path.join(target, PRESET), preset)
+        preset_path = os.path.join(target, PRESET)
+        if preset and not os.path.exists(preset_path):
+            _write_text(preset_path, preset)
+            # recorded like a DLL: turning the feature off removes it again, unless the user's edits made it theirs
+            entry["files"][PRESET] = sha256_file(preset_path)
     except OSError as e:
         raise InstallError(f"could not write to the game folder: {e}") from e
 

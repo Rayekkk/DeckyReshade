@@ -60,6 +60,8 @@ jobs:
         run: npm run typecheck
       - name: Check dependency advisories
         run: npm audit --audit-level=high
+      - name: Run frontend panel tests
+        run: npm run test:frontend
       - name: Build frontend
         run: npm run build
       - name: Build package (checks required files and that no ReShade or Microsoft file is inside)

@@ -70,7 +70,7 @@ def get(url, limit, headers=None):
     return data
 
 
-def download(url, dest, limit, sha256=None, progress=None):
+def download(url, dest, limit, sha256=None):
     """Save url to dest; returns its SHA-256. With sha256 given, anything else is refused and nothing is kept."""
     tmp = dest + ".part"
     digest, count = hashlib.sha256(), 0
@@ -83,8 +83,6 @@ def download(url, dest, limit, sha256=None, progress=None):
                     raise NetError(f"{url} is larger than expected")
                 digest.update(chunk)
                 f.write(chunk)
-                if progress:
-                    progress(count)
         # a connection dropped mid-file ends the read quietly; files without a known hash need this check
         if expected and expected.isdigit() and count != int(expected):
             raise NetError(f"the download of {url} stopped early")

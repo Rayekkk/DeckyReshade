@@ -139,6 +139,12 @@ class InstallRollback(unittest.TestCase):
             self.assertIn("AdvancedAutoHDR@AdvancedAutoHDR.fx", f.read())
         self.assertEqual(I.disable(self.manifest, 7, options + " -x")["launch_options"], "%command% -x")
         self.assertFalse(os.path.exists(os.path.join(self.target, "AutoHDR.addon64")))
+        # the first preset goes with AutoHDR while untouched, or AdvancedAutoHDR would keep running without it
+        self.assertFalse(os.path.exists(os.path.join(self.target, I.PRESET)))
+        I.enable(self.manifest, self.game, "bin/game.exe", "dxgi", 64, src, self.shaders, "",
+                 env=["DXVK_HDR=1"], preset=I.autohdr_preset())
+        _file(os.path.join(self.target, I.PRESET), b"Techniques=AdvancedAutoHDR@AdvancedAutoHDR.fx,Mine@Mine.fx")
+        self.assertEqual(I.disable(self.manifest, 7, "")["kept"], [I.PRESET])  # edited: the user's now
         # a preset the user already has is never replaced
         _file(os.path.join(self.target, I.PRESET), b"Techniques=Mine@Mine.fx")
         I.enable(self.manifest, self.game, "bin/game.exe", "dxgi", 64, src, self.shaders, "",
@@ -146,7 +152,14 @@ class InstallRollback(unittest.TestCase):
         with open(os.path.join(self.target, I.PRESET), "rb") as f:
             self.assertEqual(f.read(), b"Techniques=Mine@Mine.fx")
 
+    def test_apostrophe_in_an_argument_is_no_quote(self):
+        self.assertIn("-name=Rayek's", self.enable("-name=Rayek's"))
+
     def test_quoted_text_with_spaces_is_refused_before_anything_is_written(self):
+        for options in ('WINEDLLOVERRIDES="winmm=n,b; version=n,b" %command%',
+                        "WINEDLLOVERRIDES='winmm=n,b; version=n,b' %command%"):
+            with self.assertRaises(I.InstallError):
+                self.enable(options)
         with self.assertRaises(I.InstallError):
             self.enable('WINEDLLOVERRIDES="winmm=n,b; version=n,b" %command%')
         self.assertEqual(os.listdir(self.target), ["game.exe"])

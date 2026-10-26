@@ -153,6 +153,9 @@ class Executables(unittest.TestCase):
         with mock.patch.object(G, "running_exes", return_value={"s:/steamapps/common/hades/x64/hades.exe"}):
             found = G.inspect({"name": "Hades", "install_dir": install})
         self.assertEqual(found["candidates"][0], {"exe": "x64/Hades.exe", "bits": 64, "running": True})
+        # another game's x64/Hades.exe running does not count
+        with mock.patch.object(G, "running_exes", return_value={"s:/steamapps/common/other/x64/hades.exe"}):
+            self.assertNotIn("running", G.inspect({"name": "Hades", "install_dir": install})["candidates"][0])
         self.assertFalse(found["anticheat"])
         # not running: the DirectX build still comes before the bigger Vulkan one
         with mock.patch.object(G, "running_exes", return_value=set()):

@@ -215,6 +215,7 @@ Requires Node.js 24 and Python 3.11 or newer.
 npm ci --ignore-scripts --no-audit --no-fund
 npm run typecheck      # frontend types
 npm run test:backend   # Python backend tests
+npm run test:frontend  # panel tests (navigation, game page switches)
 npm run build          # compile the frontend
 npm run package        # create DeckyReshade-<version>.zip
 ```

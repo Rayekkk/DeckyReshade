@@ -33,7 +33,7 @@ const VERSION_NOTE: Record<string, string> = { "6.5.1": "for DXVK HDR games whos
 
 interface Package { id: string; name: string; description: string; default: boolean; required: boolean }
 interface Enabled { appid: number; name: string; api: string; exe: string; bits: number; autohdr: boolean; renodx: string }
-interface RenodxMod { name: string; maintainer: string; status: string; note: string; files: string[]; page: string }
+interface RenodxMod { name: string; maintainer: string; status: string; note: string; files: string[]; page: string; host: string }
 interface LogSummary { found: boolean; modified: number; version: string; errors: string[]; warnings: number }
 
 interface State {
@@ -62,7 +62,6 @@ interface GameInfo {
   detected_api?: string;
   detected_how?: "imports" | "strings" | "default";
   anticheat?: boolean;
-  nonsteam?: boolean;
   enabled?: boolean;
   api?: string | null;
   autohdr?: boolean;
@@ -90,7 +89,7 @@ const getRenodxMods = callable<[], { mods: { name: string; status: string }[] }>
 const disableGame = callable<[number, string], ToggleResult>("disable_game");
 const sessionStarted = callable<[number], { managed: boolean }>("session_started");
 const sessionEnded = callable<[number], { managed: boolean; loaded?: boolean; warning?: string }>("session_ended");
-const getLogs = callable<[number], { plugin: string; reshade: string }>("get_logs");
+const getLogs = callable<[number, string], { plugin: string; reshade: string }>("get_logs");
 const saveReport = callable<[], { path?: string; error?: string }>("save_report");
 
 interface UpdateInfo { current_version?: string; latest_version?: string; update_available?: boolean; asset_name?: string; error?: string }
@@ -354,10 +353,7 @@ const Wizard: FC<{ state: State; busy: boolean; run: (call: () => Promise<State>
 
 type Page = "games" | "game" | "shaders" | "reshade" | "troubleshooting" | "about";
 
-// The QAM remounts the panel on every open; keep where the user was so it opens there again.
-let lastPage: Page | null = null;
-let lastGame: number | null = null; // the game page's game
-let gameFromList = false; // the game page was opened from Games (else from the main page)
+// Every open of the menu starts on the main page (in game: with This game at the top), as in Legion Go 2 Companion.
 let lastLink = ""; // the link that opened the current page, focused again on the way back
 // A job error the user closed; a new error (a different text) shows again.
 let dismissedError = "";
@@ -426,8 +422,9 @@ const Content: FC = () => {
   const [state, setStateRaw] = useState<State | null>(lastState);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
-  const [page, setPageRaw] = useState<Page | null>(lastPage);
-  const [gameId, setGameId] = useState<number | null>(lastGame);
+  const [page, setPageRaw] = useState<Page | null>(null);
+  const [gameId, setGameId] = useState<number | null>(null);
+  const [gameFromList, setGameFromList] = useState(false); // opened from Games (else from the main page)
   const [, rerender] = useState(0);
 
   const setState = useCallback((s: State) => { lastState = s; setStateRaw(s); }, []);
@@ -461,12 +458,10 @@ const Content: FC = () => {
 
   const open = (next: Page | null, link?: string) => {
     if (link) lastLink = link;
-    lastPage = next;
     setPageRaw(next);
   };
   const openGame = (appid: number, fromList: boolean) => {
-    lastGame = appid;
-    gameFromList = fromList;
+    setGameFromList(fromList);
     setGameId(appid);
     open("game", fromList ? `game-${appid}` : "this-game");
   };
@@ -678,7 +673,7 @@ const Content: FC = () => {
           <Field label="ReShade's own log" description="Each game's page has Show ReShade log: what ReShade did in that game and which effects failed." />
         </PanelSectionRow>
         <PanelSectionRow>
-          <ButtonItem layout="below" onClick={() => getLogs(0).then(l => showText("DeckyReshade log", l.plugin), e => notify("DeckyReshade", String(e)))}
+          <ButtonItem layout="below" onClick={() => getLogs(0, "").then(l => showText("DeckyReshade log", l.plugin), e => notify("DeckyReshade", String(e)))}
             description="Everything the plugin did: downloads, games turned on or off, launch options before and after, errors.">
             Show plugin log
           </ButtonItem>
@@ -820,8 +815,10 @@ const GamePage: FC<{ game: State["games"][number]; state: State; working: boolea
       const exe = change.exe ?? info.exe ?? "";
       const chosen = change.api ?? effective;
       const hdr = (change.autohdr ?? !!info.autohdr) && addon && DXGI_APIS.includes(chosen);
+      // the standard build cannot run RenoDX: a change made without the add-on build takes it out
+      const reno = addon ? change.renodx ?? info.renodx?.installed ?? "" : "";
       setBusy(true);
-      await applyGame(game.appid, game.name, game.nonsteam, on, exe, chosen, hdr, change.renodx ?? info.renodx?.installed ?? "");
+      await applyGame(game.appid, game.name, game.nonsteam, on, exe, chosen, hdr, reno);
       await load(exe);
       setBusy(false);
       refresh();
@@ -843,7 +840,7 @@ const GamePage: FC<{ game: State["games"][number]; state: State; working: boolea
 
         <PanelSection title="HDR">
           {row(
-            <ToggleField label="AutoHDR" checked={!!info.autohdr} disabled={busyHere || !autohdrPossible || renodxOn}
+            <ToggleField label="AutoHDR" checked={!!info.autohdr} disabled={busyHere || (!info.autohdr && (!autohdrPossible || renodxOn))}
               description={!addon ? "Needs the add-on build (ReShade version page)."
                 : !DXGI_APIS.includes(effective) ? "Works only with DirectX 10/11/12 games."
                 : renodxOn ? "Off while the RenoDX mod is on: use one or the other."
@@ -859,13 +856,13 @@ const GamePage: FC<{ game: State["games"][number]; state: State; working: boolea
           )}
           {row(
             <ToggleField label="Use the RenoDX mod" checked={renodxOn}
-              disabled={busyHere || !addon || !!info.autohdr || (!renodxOn && (!info.enabled && !supported || !renodx || (!!mod && !modFits)))}
+              disabled={busyHere || (!renodxOn && (!addon || !!info.autohdr || !info.enabled && !supported || !renodx || (!!mod && !modFits)))}
               description={!addon ? "Needs the add-on build (ReShade version page)."
                 : info.autohdr ? "Off while AutoHDR is on: use one or the other."
                 : !renodx ? "Pick a mod below."
                 : mod && !modFits ? (mod.files.length ? `This mod is only ${mod.files.map(b => `${b}-bit`).join(" and ")}; the executable is ${info.bits}-bit.`
                   : `Only on Nexus Mods or Discord, install it by hand: ${mod.page}`)
-                : `Downloads the mod from its author and puts it next to ReShade. Adds ${state.autohdr_env.join(" ")}; turn on HDR in Steam's display settings.`}
+                : `Downloads the mod from ${mod?.host || "its author"} and puts it next to ReShade. Adds ${state.autohdr_env.join(" ")}; turn on HDR in Steam's display settings.`}
               onChange={on => apply(on || !!info.enabled, { renodx: on ? renodx : "" })} />,
           )}
           {renodxOn && row(
@@ -903,7 +900,7 @@ const GamePage: FC<{ game: State["games"][number]; state: State; working: boolea
           )}
           {row(
             <ButtonItem layout="below" disabled={!info.log?.found}
-              onClick={() => getLogs(game.appid).then(l => showText(`ReShade log · ${game.name}`, l.reshade), e => notify("DeckyReshade", String(e)))}>
+              onClick={() => getLogs(game.appid, info.exe ?? "").then(l => showText(`ReShade log · ${game.name}`, l.reshade), e => notify("DeckyReshade", String(e)))}>
               Show ReShade log
             </ButtonItem>,
           )}

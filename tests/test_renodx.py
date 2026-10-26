@@ -60,6 +60,11 @@ class Parse(unittest.TestCase):
         self.assertEqual((old["status"], old["note"]), ("other", "Superseded by Generic Unity mod"))
         self.assertTrue(old["files"])  # GitHub releases are trusted
 
+    def test_host_names_who_publishes_the_file(self):
+        self.assertEqual(X.host("https://clshortfuse.github.io/renodx/renodx-godofwar.addon64"), "clshortfuse.github.io")
+        self.assertEqual(X.host("https://github.com/x/renodx/releases/download/snapshot/renodx-old.addon64"), "github.com/x")
+        self.assertEqual(X.host(None), "")
+
     def test_unreadable_page(self):
         self.assertRaises(X.RenoDXError, X.parse, "<html>moved</html>")
         self.assertRaises(X.RenoDXError, X.parse, "# List\n\nnothing here\n")
