@@ -105,7 +105,7 @@ const okText = { color: "var(--gpColor-Green, #4ade80)" } as const;
 const warnText = { color: "var(--gpColor-Yellow, #facc15)" } as const;
 
 const versionLabel = (v: string, newest: string | undefined) =>
-  v === "latest" ? "Latest, updated automatically" : `${v}${VERSION_NOTE[v] ? `, ${VERSION_NOTE[v]}` : v === newest ? ", newest known" : ""}`;
+  v === "latest" ? "Latest, auto-updated" : `${v}${VERSION_NOTE[v] ? `, ${VERSION_NOTE[v]}` : v === newest ? ", newest known" : ""}`;
 
 const ago = (epoch: number) => {
   const s = Math.max(0, Date.now() / 1000 - epoch);
@@ -350,18 +350,84 @@ const Wizard: FC<{ state: State; busy: boolean; run: (call: () => Promise<State>
   );
 };
 
-// ---- main panel ----------------------------------------------------------------------------------------------------
+// ---- main panel: a short list of categories, each opening its own page (as in Legion Go 2 Companion) ---------------
 
-// The QAM remounts the panel on every open; keep the last state and pick so it renders at once.
-let lastPick: number | null = null;
+type Page = "games" | "game" | "shaders" | "reshade" | "troubleshooting" | "about";
+
+// The QAM remounts the panel on every open; keep where the user was so it opens there again.
+let lastPage: Page | null = null;
+let lastGame: number | null = null; // the game page's game
+let gameFromList = false; // the game page was opened from Games (else from the main page)
+let lastLink = ""; // the link that opened the current page, focused again on the way back
 // A job error the user closed; a new error (a different text) shows again.
 let dismissedError = "";
+
+const Chevron: FC = () => (
+  <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"
+    style={{ display: "block", width: "1em", height: "1em", flexShrink: 0 }}>
+    <path d="m9 18 6-6-6-6" />
+  </svg>
+);
+
+const ICONS: Record<string, ReactNode> = {
+  game: <><rect x="2.5" y="7" width="19" height="11" rx="5.5" /><path d="M7.5 10.5v4M5.5 12.5h4" /><path d="M15.5 11.5h.01M17.5 13.5h.01" /></>,
+  games: <><rect x="3.5" y="3.5" width="7" height="7" rx="1.5" /><rect x="13.5" y="3.5" width="7" height="7" rx="1.5" /><rect x="3.5" y="13.5" width="7" height="7" rx="1.5" /><rect x="13.5" y="13.5" width="7" height="7" rx="1.5" /></>,
+  shaders: <><path d="M12 3a9 9 0 1 0 0 18c.9 0 1.5-.7 1.5-1.5 0-1.1-1-1.4-1-2.4 0-.9.7-1.6 1.6-1.6H16a5 5 0 0 0 5-5C21 6.3 17 3 12 3z" /><path d="M7.5 11h.01M10.5 7.5h.01M15 7.5h.01" /></>,
+  version: <><path d="M4 6h9M17 6h3M4 12h3M11 12h9M4 18h11M19 18h1" /><circle cx="15" cy="6" r="2" /><circle cx="9" cy="12" r="2" /><circle cx="17" cy="18" r="2" /></>,
+  troubleshooting: <><path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L3.5 17.5l3 3 5.8-5.8a4 4 0 0 0 5.4-5.4l-2.5 2.5-2.4-.6-.6-2.4z" /></>,
+  about: <><circle cx="12" cy="12" r="9" /><path d="M12 11v6M12 7.5h.01" /></>,
+};
+
+const Icon: FC<{ name: string }> = ({ name }) => (
+  <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
+    strokeLinecap="round" strokeLinejoin="round" style={{ display: "block", width: "1.2em", height: "1.2em", flexShrink: 0 }}>
+    {ICONS[name]}
+  </svg>
+);
+
+// A row that opens a page: icon, name, what it is for and, below, how things stand.
+const SectionLink: FC<{ id: string; icon: string; title: string; description: ReactNode; note?: ReactNode; onClick: () => void }> =
+  ({ id, icon, title, description, note, onClick }) => {
+    const ref = useRef<HTMLDivElement>(null);
+    // Coming back from a page puts the focus on the row that opened it, once.
+    useEffect(() => { if (id === lastLink) ref.current?.focus(); }, []);
+    return (
+      <PanelSectionRow>
+        <Field ref={ref} label={title} icon={<Icon name={icon} />} bottomSeparator="standard" verticalAlignment="center"
+          description={note ? <>{description}<div style={{ fontSize: "11px", opacity: 0.75, marginTop: "2px" }}>{note}</div></> : description}
+          childrenLayout="inline" childrenContainerWidth="min" focusable highlightOnFocus onActivate={onClick}>
+          <Chevron />
+        </Field>
+      </PanelSectionRow>
+    );
+  };
+
+const PageHeader: FC<{ title: string; back: string; onBack: () => void }> = ({ title, back, onBack }) => {
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => { ref.current?.querySelector<HTMLButtonElement>("button")?.focus(); }, []);
+  return (
+    <PanelSection title={title}>
+      <PanelSectionRow>
+        <div ref={ref}><ButtonItem layout="below" onClick={onBack}>‹ {back}</ButtonItem></div>
+      </PanelSectionRow>
+    </PanelSection>
+  );
+};
+
+const PageShell: FC<{ children: ReactNode }> = ({ children }) => (
+  <div style={{ width: "100%", maxWidth: "100%", minWidth: 0, overflowX: "hidden", boxSizing: "border-box" }}>{children}</div>
+);
+
+const gameSummary = (g?: Enabled) => !g ? "ReShade off"
+  : `ReShade on · ${API_LABEL[g.api] ?? g.api}${g.autohdr ? " · AutoHDR" : ""}${g.renodx ? " · RenoDX" : ""}`;
+const renodxNote = (status: string | null) => status ? `RenoDX mod: ${RENODX_STATUS[status] ?? "⚠️ see notes"}` : undefined;
 
 const Content: FC = () => {
   const [state, setStateRaw] = useState<State | null>(lastState);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
-  const [showPackages, setShowPackages] = useState(false);
+  const [page, setPageRaw] = useState<Page | null>(lastPage);
+  const [gameId, setGameId] = useState<number | null>(lastGame);
   const [, rerender] = useState(0);
 
   const setState = useCallback((s: State) => { lastState = s; setStateRaw(s); }, []);
@@ -393,6 +459,18 @@ const Content: FC = () => {
     setBusy(false);
   };
 
+  const open = (next: Page | null, link?: string) => {
+    if (link) lastLink = link;
+    lastPage = next;
+    setPageRaw(next);
+  };
+  const openGame = (appid: number, fromList: boolean) => {
+    lastGame = appid;
+    gameFromList = fromList;
+    setGameId(appid);
+    open("game", fromList ? `game-${appid}` : "this-game");
+  };
+
   const nonsteam = (appid: number) => !!state?.games.find(g => g.appid === appid)?.nonsteam;
 
   const turnOffAll = async () => {
@@ -417,9 +495,119 @@ const Content: FC = () => {
 
   const { reshade, job, settings } = state;
   const working = busy || !!job.task;
-  return (
-    <>
-      <PanelSection title="ReShade">
+  const enabled = (appid: number) => state.enabled.find(g => g.appid === appid);
+  const running = Router.MainRunningApp;
+  const runningGame = running ? state.games.find(g => g.appid === running.appid) : undefined;
+
+  // A download in progress or a failed one, at the top of every page.
+  const status = (job.task || (job.error && job.error !== dismissedError)) ? (
+    <PanelSection>
+      {job.task && <PanelSectionRow><Field label={job.task}><Spinner style={{ width: "20px" }} /></Field></PanelSectionRow>}
+      {job.error && job.error !== dismissedError && (
+        <>
+          <PanelSectionRow><div style={errorBox}>{job.error}</div></PanelSectionRow>
+          <PanelSectionRow>
+            <ButtonItem layout="below" onClick={() => { dismissedError = job.error; rerender(n => n + 1); }}>Dismiss</ButtonItem>
+          </PanelSectionRow>
+        </>
+      )}
+    </PanelSection>
+  ) : null;
+
+  const versionNote = <>
+    ReShade {reshade.installed} · {reshade.addon ? "add-on build" : "standard build"} · {settings.version === "latest" ? "updates automatically" : "fixed version"}
+    {reshade.update_available && <div style={warnText}>ReShade {reshade.latest} is available</div>}
+  </>;
+
+  if (!page) {
+    const renodxGames = state.games.filter(g => g.renodx).length;
+    return (
+      <PageShell>
+        {status}
+        <PanelSection title="ReShade">
+          {runningGame && <SectionLink id="this-game" icon="game" title={`This game: ${runningGame.name}`}
+            description={gameSummary(enabled(runningGame.appid))} note={renodxNote(runningGame.renodx)}
+            onClick={() => openGame(runningGame.appid, false)} />}
+          <SectionLink id="games" icon="games" title="Games"
+            description="Your library: turn ReShade, AutoHDR or a RenoDX mod on per game"
+            note={`${state.enabled.length} with ReShade · ${renodxGames} with a RenoDX mod · ${state.games.length} games`}
+            onClick={() => open("games", "games")} />
+          <SectionLink id="shaders" icon="shaders" title="Shaders" description="Effect packages shared by every game"
+            note={`${state.shaders.installed.length} package${state.shaders.installed.length === 1 ? "" : "s"} installed`}
+            onClick={() => open("shaders", "shaders")} />
+          <SectionLink id="reshade" icon="version" title="ReShade version" description="Version, add-on build, updates, launch options"
+            note={versionNote} onClick={() => open("reshade", "reshade")} />
+        </PanelSection>
+        <PanelSection title="Plugin">
+          <SectionLink id="troubleshooting" icon="troubleshooting" title="Troubleshooting"
+            description="Logs and a report for when ReShade does not work" onClick={() => open("troubleshooting", "troubleshooting")} />
+          <SectionLink id="about" icon="about" title="About" description={`DeckyReshade · v${state.version} · plugin updates`}
+            onClick={() => open("about", "about")} />
+        </PanelSection>
+      </PageShell>
+    );
+  }
+
+  if (page === "game" && gameId !== null) {
+    const game = state.games.find(g => g.appid === gameId);
+    return (
+      <PageShell>
+        <PageHeader title={game?.name ?? "Game"} back={gameFromList ? "Games" : "ReShade"}
+          onBack={() => open(gameFromList ? "games" : null)} />
+        {status}
+        {game ? <GamePage key={game.appid} game={game} state={state} working={working} setBusy={setBusy} refresh={refresh} />
+          : <PanelSection><PanelSectionRow><div style={errorBox}>This game is not in the library any more.</div></PanelSectionRow></PanelSection>}
+      </PageShell>
+    );
+  }
+
+  if (page === "games") {
+    const others = state.games.filter(g => !enabled(g.appid))
+      .sort((a, b) => (b.appid === runningGame?.appid ? 1 : 0) - (a.appid === runningGame?.appid ? 1 : 0));
+    return (
+      <PageShell>
+        <PageHeader title="Games" back="ReShade" onBack={() => open(null)} />
+        {status}
+        {state.enabled.length > 0 && (
+          <PanelSection title="With ReShade">
+            {state.enabled.map(g => (
+              <SectionLink key={g.appid} id={`game-${g.appid}`} icon="game" title={g.name} description={gameSummary(g)}
+                note={g.exe} onClick={() => openGame(g.appid, true)} />
+            ))}
+            <PanelSectionRow>
+              <ButtonItem layout="below" disabled={working} onClick={turnOffAll}
+                description="Removes ReShade's DLLs and launch options from every game. Your ReShade settings, presets and logs stay in the game folders. Do this before uninstalling.">
+                Turn off ReShade in all games
+              </ButtonItem>
+            </PanelSectionRow>
+          </PanelSection>
+        )}
+        <PanelSection title={state.scanned ? "All games" : "Scanning your library…"}>
+          {others.map(g => (
+            <SectionLink key={g.appid} id={`game-${g.appid}`} icon="game"
+              title={`${g.appid === runningGame?.appid ? "▶ " : ""}${g.name}`}
+              description={g.nonsteam ? "Non-Steam game" : "ReShade off"} note={renodxNote(g.renodx)}
+              onClick={() => openGame(g.appid, true)} />
+          ))}
+          {state.scanned && !others.length && <PanelSectionRow><div style={muted}>No other games found.</div></PanelSectionRow>}
+        </PanelSection>
+      </PageShell>
+    );
+  }
+
+  if (page === "shaders") return (
+    <PageShell>
+      <PageHeader title="Shaders" back="ReShade" onBack={() => open(null)} />
+      {status}
+      <ShadersPage state={state} working={working} run={run} />
+    </PageShell>
+  );
+
+  if (page === "reshade") return (
+    <PageShell>
+      <PageHeader title="ReShade version" back="ReShade" onBack={() => open(null)} />
+      {status}
+      <PanelSection title="Version">
         <PanelSectionRow>
           <Field label={`ReShade ${reshade.installed}`} description={<>
             <div>{reshade.addon ? "Add-on build" : "Standard build"} · {settings.version === "latest" ? "updates automatically" : "fixed version"}</div>
@@ -428,91 +616,46 @@ const Content: FC = () => {
               : settings.version === "latest" && reshade.latest ? <div style={okText}>Up to date</div> : null}
           </>} />
         </PanelSectionRow>
-        {job.task && <PanelSectionRow><Field label={job.task}><Spinner style={{ width: "20px" }} /></Field></PanelSectionRow>}
-        {job.error && job.error !== dismissedError && (
-          <>
-            <PanelSectionRow><div style={errorBox}>{job.error}</div></PanelSectionRow>
-            <PanelSectionRow>
-              <ButtonItem layout="below" onClick={() => { dismissedError = job.error; rerender(n => n + 1); }}>Dismiss</ButtonItem>
-            </PanelSectionRow>
-          </>
-        )}
-        {reshade.update_available && (
+        {reshade.update_available ? (
           <PanelSectionRow>
             <ButtonItem layout="below" disabled={working} onClick={() => run(updateReshade)}
-              description="Every game set up below gets the new version at its next start.">
+              description="Every game set up here gets the new version at its next start.">
               Update to ReShade {reshade.latest}
             </ButtonItem>
           </PanelSectionRow>
-        )}
-        {settings.version === "latest" && !reshade.update_available && (
+        ) : settings.version === "latest" && (
           <PanelSectionRow>
             <ButtonItem layout="below" disabled={working} onClick={() => run(checkReshade)}>Check for a new ReShade now</ButtonItem>
           </PanelSectionRow>
         )}
-      </PanelSection>
-
-      <GamePanel state={state} working={working} setBusy={setBusy} refresh={refresh} />
-
-      {state.enabled.length > 0 && (
-        <PanelSection title="Games with ReShade">
-          {state.enabled.map(g => (
-            <PanelSectionRow key={g.appid}>
-              <ToggleField label={g.name} checked disabled={working}
-                description={`${g.exe} · ${g.bits}-bit · ${API_LABEL[g.api] ?? g.api}${g.autohdr ? " · AutoHDR" : ""}${g.renodx ? " · RenoDX" : ""}`}
-                onChange={async () => { setBusy(true); await applyGame(g.appid, g.name, nonsteam(g.appid), false); setBusy(false); refresh(); }} />
-            </PanelSectionRow>
-          ))}
-          <PanelSectionRow>
-            <ButtonItem layout="below" disabled={working} onClick={turnOffAll}
-              description="Removes ReShade's DLLs and launch options from every game. Your ReShade settings, presets and logs stay in the game folders. Do this before uninstalling.">
-              Turn off ReShade in all games
-            </ButtonItem>
-          </PanelSectionRow>
-        </PanelSection>
-      )}
-
-      <PanelSection title="Shaders">
         <PanelSectionRow>
-          <Field label={`${state.shaders.installed.length} shader package${state.shaders.installed.length === 1 ? "" : "s"} installed`}
-            description="Shared by every game; changes reach them at their next start." />
-        </PanelSectionRow>
-        <PanelSectionRow>
-          <ButtonItem layout="below" disabled={working || !state.shaders.installed.length} onClick={() => run(updateShaders)}>
-            Update shaders
-          </ButtonItem>
-        </PanelSectionRow>
-        <PanelSectionRow>
-          <ButtonItem layout="below" disabled={working && !showPackages}
-            onClick={() => { setShowPackages(!showPackages); if (!state.shaders.packages) run(loadPackages); }}>
-            {showPackages ? "Hide shader packages" : "Choose shader packages"}
-          </ButtonItem>
-        </PanelSectionRow>
-        {showPackages && state.shaders.packages?.map(p => (
-          <PanelSectionRow key={p.id}>
-            <ToggleField label={p.name} description={p.description} disabled={working || p.required}
-              checked={state.shaders.installed.includes(p.id)} onChange={on => run(() => setPackage(p.id, on))} />
-          </PanelSectionRow>
-        ))}
-      </PanelSection>
-
-      <PanelSection title="Settings">
-        <PanelSectionRow>
-          <DropdownItem layout="below" childrenContainerWidth="max" label="ReShade version" disabled={working} selectedOption={settings.version}
+          <DropdownItem layout="below" childrenContainerWidth="max" label="Version" disabled={working} selectedOption={settings.version}
             description="Changing it moves every game to that version."
             rgOptions={["latest", ...reshade.versions].map(v => ({ data: v, label: versionLabel(v, reshade.versions[0]) }))}
             onChange={o => run(() => setVersion(o.data))} />
         </PanelSectionRow>
         <PanelSectionRow>
           <ToggleField label="Add-on build" checked={settings.addon} disabled={working}
-            description="Needed for AutoHDR and depth add-ons. ReShade turns this build off in online games; use the standard build there."
+            description="Needed for AutoHDR, RenoDX and depth add-ons. ReShade turns this build off in online games; use the standard build there."
             onChange={on => run(() => setSetting("addon", on))} />
         </PanelSectionRow>
+      </PanelSection>
+      <PanelSection title="Launch options">
         <PanelSectionRow>
           <ToggleField label="Set launch options automatically" checked={settings.auto_launch_options} disabled={working}
             description={`Turning ReShade on adds ${state.launch_words.dxgi} (with the chosen API) to the game's launch options, next to anything already there. Off: add it yourself. With Decky Launch Options installed, it decides instead (ReShade tab).`}
             onChange={on => run(() => setSetting("auto_launch_options", on))} />
         </PanelSectionRow>
+        {dloInstalled() && (
+          <PanelSectionRow>
+            <ButtonItem layout="below" onClick={() => exportToDlo(state.launch_words, state.autohdr_env)}
+              description="Adds a ReShade tab to Decky Launch Options with one choice per game (Off or a graphics API) and the HDR variable for AutoHDR and RenoDX.">
+              Add ReShade to Decky Launch Options
+            </ButtonItem>
+          </PanelSectionRow>
+        )}
+      </PanelSection>
+      <PanelSection title="RenoDX mod list">
         <PanelSectionRow>
           <ButtonItem layout="below" disabled={working} onClick={() => run(refreshRenodx)}
             description={<>
@@ -522,17 +665,18 @@ const Content: FC = () => {
             Refresh RenoDX list
           </ButtonItem>
         </PanelSectionRow>
-        {(window as any).hasDeckyLaunchOptions && (
-          <PanelSectionRow>
-            <ButtonItem layout="below" onClick={() => exportToDlo(state.launch_words, state.autohdr_env)}
-              description="Adds a ReShade tab to Decky Launch Options with one choice per game (Off or a graphics API) and the HDR variable for AutoHDR and RenoDX. Use it for games Decky Launch Options runs; DeckyReshade still puts the files in place.">
-              Add ReShade to Decky Launch Options
-            </ButtonItem>
-          </PanelSectionRow>
-        )}
       </PanelSection>
+    </PageShell>
+  );
 
-      <PanelSection title="Troubleshooting">
+  if (page === "troubleshooting") return (
+    <PageShell>
+      <PageHeader title="Troubleshooting" back="ReShade" onBack={() => open(null)} />
+      {status}
+      <PanelSection title="Logs">
+        <PanelSectionRow>
+          <Field label="ReShade's own log" description="Each game's page has Show ReShade log: what ReShade did in that game and which effects failed." />
+        </PanelSectionRow>
         <PanelSectionRow>
           <ButtonItem layout="below" onClick={() => getLogs(0).then(l => showText("DeckyReshade log", l.plugin), e => notify("DeckyReshade", String(e)))}
             description="Everything the plugin did: downloads, games turned on or off, launch options before and after, errors.">
@@ -545,28 +689,71 @@ const Content: FC = () => {
             Save report to Downloads
           </ButtonItem>
         </PanelSectionRow>
+      </PanelSection>
+      <PanelSection title="Start over">
         <PanelSectionRow>
           <ButtonItem layout="below" disabled={working}
             onClick={() => state.enabled.length
-              ? notify("DeckyReshade", "Turn ReShade off in all games first; they still use these files.")
-              : confirm("Remove downloaded files?", "ReShade, the shader compiler, AutoHDR and all shader packages are deleted from this device. Setup starts again next time.",
-                  "Remove", () => { wizard = { ...wizard, step: 0 }; run(removeData); })}
+              ? notify("DeckyReshade", "Turn ReShade off in all games first (Games); they still use these files.")
+              : confirm("Remove downloaded files?", "ReShade, the shader compiler, AutoHDR, RenoDX mods and all shader packages are deleted from this device. Setup starts again next time.",
+                  "Remove", () => { wizard = { ...wizard, step: 0 }; open(null); run(removeData); })}
             description="Deletes ReShade, add-ons and shaders from this device. Games must be turned off first.">
             Remove downloaded files
           </ButtonItem>
         </PanelSectionRow>
       </PanelSection>
+    </PageShell>
+  );
 
-      <PanelSection title="About">
+  return (
+    <PageShell>
+      <PageHeader title="About" back="ReShade" onBack={() => open(null)} />
+      <PanelSection title="DeckyReshade">
         <PanelSectionRow>
-          <Field label={`DeckyReshade · v${state.version}`}
-            description="ReShade by crosire (reshade.me), AutoHDR add-on by EndlesslyFlowering, AdvancedAutoHDR by Pumbo; all downloaded on your device from their authors." />
+          <Field label={`Version ${state.version}`} description="ReShade for Steam and non-Steam games under Proton, set up from Gaming Mode." />
+        </PanelSectionRow>
+        <PanelSectionRow>
+          <Field label="Author" description="Rayek · BSD-3-Clause open-source plugin." />
+        </PanelSectionRow>
+        <PanelSectionRow>
+          <Field label="Downloaded on your device" description="ReShade by crosire (reshade.me); AutoHDR add-on by EndlesslyFlowering; AdvancedAutoHDR by Pumbo; RenoDX mods by their authors; shaders by theirs." />
         </PanelSectionRow>
       </PanelSection>
       <Updates version={state.version} />
-    </>
+    </PageShell>
   );
 };
+
+const ShadersPage: FC<{ state: State; working: boolean; run: (call: () => Promise<State>) => Promise<void> }> =
+  ({ state, working, run }) => {
+    useEffect(() => { if (!state.shaders.packages) run(loadPackages); }, []);
+    const installed = state.shaders.installed;
+    return (
+      <>
+        <PanelSection title="Installed">
+          <PanelSectionRow>
+            <Field label={`${installed.length} package${installed.length === 1 ? "" : "s"} installed`}
+              description="Shared by every game; changes reach them at their next start. In game, ReShade lists their effects." />
+          </PanelSectionRow>
+          <PanelSectionRow>
+            <ButtonItem layout="below" disabled={working || !installed.length} onClick={() => run(updateShaders)}
+              description="Downloads the newest version of every installed package.">
+              Update shaders
+            </ButtonItem>
+          </PanelSectionRow>
+        </PanelSection>
+        <PanelSection title="Packages">
+          {!state.shaders.packages && <PanelSectionRow><Spinner /></PanelSectionRow>}
+          {state.shaders.packages?.map(p => (
+            <PanelSectionRow key={p.id}>
+              <ToggleField label={p.name} description={p.description} disabled={working || p.required}
+                checked={installed.includes(p.id)} onChange={on => run(() => setPackage(p.id, on))} />
+            </PanelSectionRow>
+          ))}
+        </PanelSection>
+      </>
+    );
+  };
 
 const LastRun: FC<{ log?: LogSummary; enabled: boolean }> = ({ log, enabled }) => {
   if (!log?.found)
@@ -586,27 +773,21 @@ const LastRun: FC<{ log?: LogSummary; enabled: boolean }> = ({ log, enabled }) =
 // The installable RenoDX mods, for picking one by hand; loaded once per panel lifetime.
 let renodxMods: { name: string; status: string }[] | null = null;
 
-const GamePanel: FC<{ state: State; working: boolean; setBusy: (b: boolean) => void; refresh: () => void }> =
-  ({ state, working, setBusy, refresh }) => {
-    const running = Router.MainRunningApp;
-    const runningId = running && state.games.some(g => g.appid === running.appid) ? running.appid : null;
-    // In game, the panel opens on that game; otherwise on the last one picked.
-    const [pick, setPickRaw] = useState<number | null>(runningId ?? lastPick);
+const GamePage: FC<{ game: State["games"][number]; state: State; working: boolean; setBusy: (b: boolean) => void; refresh: () => void }> =
+  ({ game, state, working, setBusy, refresh }) => {
     const [info, setInfo] = useState<GameInfo | null>(null);
     const [api, setApi] = useState<string | null>(null); // null: the detected one
     const [renodx, setRenodx] = useState(""); // the mod chosen for this game, by name
     const [mods, setMods] = useState(renodxMods);
     const [loading, setLoading] = useState(false);
 
-    const setPick = (appid: number) => { lastPick = appid; setPickRaw(appid); };
-
-    const wanted = useRef<number | null>(null);
-    const load = useCallback(async (appid: number, exe = "", renodxName = "") => {
-      wanted.current = appid;
+    const wanted = useRef(0); // the newest load; an older one finishing late is dropped
+    const load = useCallback(async (exe = "", renodxName = "") => {
+      const ticket = ++wanted.current;
       setLoading(true);
       try {
-        const next = await getGame(appid, exe, renodxName);
-        if (wanted.current !== appid) return; // another game was picked meanwhile; its own load shows it
+        const next = await getGame(game.appid, exe, renodxName);
+        if (wanted.current !== ticket) return;
         setInfo(next);
         setApi(next.enabled ? next.api ?? null : null);
         setRenodx(next.renodx?.installed || renodxName || next.renodx?.auto || "");
@@ -614,125 +795,120 @@ const GamePanel: FC<{ state: State; working: boolean; setBusy: (b: boolean) => v
         setInfo({ ok: false, error: String(e) });
       }
       setLoading(false);
-    }, []);
+    }, [game.appid]);
 
-    useEffect(() => { if (pick !== null) load(pick); }, [pick, load]);
+    useEffect(() => { load(); }, [load]);
     useEffect(() => {
       if (!renodxMods && state.renodx.count) getRenodxMods().then(r => { renodxMods = r.mods; setMods(r.mods); }, () => {});
     }, [state.renodx.count]);
 
-    const game = state.games.find(g => g.appid === pick);
-    const detected = info?.detected_api ?? "dxgi";
+    if (loading && !info) return <PanelSection><PanelSectionRow><Spinner /></PanelSectionRow></PanelSection>;
+    if (!info) return null;
+    if (!info.ok) return <PanelSection><PanelSectionRow><div style={errorBox}>{info.error}</div></PanelSectionRow></PanelSection>;
+
+    const detected = info.detected_api ?? "dxgi";
     const effective = api ?? detected;
     const supported = (APIS as readonly string[]).includes(effective);
     const addon = state.reshade.addon;
     const autohdrPossible = addon && DXGI_APIS.includes(effective);
-    const renodxOn = !!info?.renodx?.installed;
-    const mod = info?.renodx?.mod ?? null;
-    const modFits = !!mod && mod.files.includes(String(info?.bits));
+    const renodxOn = !!info.renodx?.installed;
+    const mod = info.renodx?.mod ?? null;
+    const modFits = !!mod && mod.files.includes(String(info.bits));
 
     // Apply a change; when ReShade is already on, the game is set up again with the new choice.
     const apply = async (on: boolean, change: { exe?: string; api?: string; autohdr?: boolean; renodx?: string } = {}) => {
-      if (!game || !info) return;
       const exe = change.exe ?? info.exe ?? "";
       const chosen = change.api ?? effective;
       const hdr = (change.autohdr ?? !!info.autohdr) && addon && DXGI_APIS.includes(chosen);
       setBusy(true);
       await applyGame(game.appid, game.name, game.nonsteam, on, exe, chosen, hdr, change.renodx ?? info.renodx?.installed ?? "");
-      await load(game.appid, exe);
+      await load(exe);
       setBusy(false);
       refresh();
     };
 
-    const games = [...state.games].sort((a, b) => (b.appid === runningId ? 1 : 0) - (a.appid === runningId ? 1 : 0));
-    const label = (g: State["games"][number]) => `${g.appid === runningId ? "▶ " : ""}${g.name}` +
-      `${g.nonsteam ? " (non-Steam)" : ""}${g.renodx ? ` · RenoDX ${renodxBadge(g.renodx)}` : ""}`;
     const row = (child: ReactNode) => <PanelSectionRow>{child}</PanelSectionRow>;
+    const busyHere = working || loading;
     return (
-      <PanelSection title={runningId && pick === runningId ? "This game" : "Game"}>
-        {row(
-          <DropdownItem layout="below" childrenContainerWidth="max" strDefaultLabel={state.scanned ? "Pick a game" : "Scanning your library…"}
-            disabled={working} selectedOption={pick}
-            rgOptions={games.map(g => ({ data: g.appid, label: label(g) }))}
-            onChange={o => setPick(o.data)} />,
-        )}
-        {pick !== null && (loading && !info ? row(<Spinner />) : info && !info.ok ? row(<div style={errorBox}>{info.error}</div>) : info && (
-          <>
-            {row(
-              <ToggleField label="ReShade in this game" checked={!!info.enabled}
-                disabled={working || loading || (!info.enabled && !supported)}
-                description={<LastRun log={info.log} enabled={!!info.enabled} />}
-                onChange={on => apply(on)} />,
-            )}
-            {info.anticheat && row(<div style={errorBox}>{ANTICHEAT_WARNING}</div>)}
-            {row(
-              <ToggleField label="AutoHDR" checked={!!info.autohdr} disabled={working || loading || !autohdrPossible || renodxOn}
-                description={!addon ? "Needs the add-on build (Settings below)."
-                  : !DXGI_APIS.includes(effective) ? "Works only with DirectX 10/11/12 games."
-                  : renodxOn ? "Off while the RenoDX mod is on: use one or the other."
-                  : `HDR for SDR games on HDR screens; turn on HDR in Steam's display settings too. Adds ${state.autohdr_env.join(" ")}.${state.reshade.autohdr_ready ? "" : " Downloads the add-on first (about 150 KB)."}`}
-                onChange={on => info.enabled ? apply(true, { autohdr: on }) : setInfo({ ...info, autohdr: on })} />,
-            )}
-            {row(
-              <Field label="RenoDX" description={mod ? <>
-                <div style={mod.status === "working" ? okText : warnText}>
-                  {RENODX_STATUS[mod.status] ?? `⚠️ ${mod.note}`}
-                </div>
-                <div>{mod.name} · by {mod.maintainer}{mod.status !== "other" && mod.note ? ` · ${mod.note}` : ""}</div>
-              </> : state.renodx.count ? "No RenoDX mod in the list matches this game; you can pick one below." : "The RenoDX list is not loaded yet (Settings → Refresh RenoDX list)."} />,
-            )}
-            {mods && mods.length > 0 && row(
-              <DropdownItem layout="below" childrenContainerWidth="max" label="RenoDX mod" disabled={working || loading} selectedOption={renodx || null}
-                strDefaultLabel="None"
-                rgOptions={mods.map(m => ({ data: m.name, label: `${renodxBadge(m.status)} ${m.name}${m.name === info.renodx?.auto ? " (matched)" : ""}` }))}
-                onChange={o => renodxOn ? apply(true, { renodx: o.data }) : load(game!.appid, info.exe ?? "", o.data)} />,
-            )}
-            {row(
-              <ToggleField label="RenoDX HDR mod" checked={renodxOn}
-                disabled={working || loading || !addon || !!info.autohdr || (!renodxOn && (!info.enabled && !supported || !renodx))}
-                description={!addon ? "Needs the add-on build (Settings below)."
-                  : info.autohdr ? "Off while AutoHDR is on: use one or the other."
-                  : !renodx ? "Pick a mod above."
-                  : mod && !modFits ? (mod.files.length ? `This mod is only ${mod.files.map(b => `${b}-bit`).join(" and ")}; the executable is ${info.bits}-bit.`
-                    : `Only on Nexus Mods or Discord, install it by hand: ${mod.page}`)
-                  : `Downloads the mod from its author (snapshot build) and puts it next to ReShade. Adds ${state.autohdr_env.join(" ")}; turn on HDR in Steam's display settings.`}
-                onChange={on => apply(on || !!info.enabled, { renodx: on ? renodx : "" })} />,
-            )}
-            {renodxOn && row(
-              <ButtonItem layout="below" disabled={working || loading} onClick={() => apply(true)}
-                description="Downloads the newest snapshot of the mod again.">
-                Update RenoDX mod
-              </ButtonItem>,
-            )}
-            {row(
-              <DropdownItem layout="below" childrenContainerWidth="max" label="Executable" disabled={working || loading} selectedOption={info.exe}
-                description={`${info.bits}-bit. ReShade goes into this file's folder; pick the one that runs the game.`}
-                rgOptions={(info.candidates ?? []).map(c => ({ data: c.exe, label: `${c.exe} (${c.bits}-bit)${c.running ? ", running now" : ""}` }))}
-                onChange={o => info.enabled ? apply(true, { exe: o.data }) : load(game!.appid, o.data, renodx)} />,
-            )}
-            {row(
-              <DropdownItem layout="below" childrenContainerWidth="max" label="Graphics API" disabled={working || loading} selectedOption={api ?? "auto"}
-                description={info.detected_how === "default" ? "Could not be read from the game; DirectX 10/11/12 is the most common."
-                  : detected === "vulkan" ? "Vulkan games are not supported yet. If the game also has a DirectX mode, pick that here."
-                  : "If ReShade does not appear, try another one; dinput8 works with most games as a last resort."}
-                rgOptions={[{ data: "auto", label: `Auto: ${API_LABEL[detected] ?? detected}` },
-                  ...APIS.map(a => ({ data: a, label: API_LABEL[a] }))]}
-                onChange={o => {
-                  const chosen = o.data === "auto" ? null : o.data as string;
-                  setApi(chosen);
-                  const next = chosen ?? detected;
-                  if (info.enabled && (APIS as readonly string[]).includes(next)) apply(true, { api: next });
-                }} />,
-            )}
-            {row(
-              <ButtonItem layout="below" disabled={!info.log?.found}
-                onClick={() => getLogs(game!.appid).then(l => showText(`ReShade log · ${game!.name}`, l.reshade), e => notify("DeckyReshade", String(e)))}>
-                Show ReShade log
-              </ButtonItem>,
-            )}
-          </>
-        ))}
-      </PanelSection>
+      <>
+        <PanelSection title="ReShade">
+          {row(
+            <ToggleField label="ReShade in this game" checked={!!info.enabled} disabled={busyHere || (!info.enabled && !supported)}
+              description={<LastRun log={info.log} enabled={!!info.enabled} />} onChange={on => apply(on)} />,
+          )}
+          {info.anticheat && row(<div style={errorBox}>{ANTICHEAT_WARNING}</div>)}
+          {!info.enabled && row(<div style={muted}>Then restart the game and press Home to open ReShade.</div>)}
+          {dloInstalled() && row(<div style={muted}>Launch options are up to Decky Launch Options: in its ReShade tab, pick this game's graphics API (and ReShade HDR for AutoHDR or RenoDX).</div>)}
+        </PanelSection>
+
+        <PanelSection title="HDR">
+          {row(
+            <ToggleField label="AutoHDR" checked={!!info.autohdr} disabled={busyHere || !autohdrPossible || renodxOn}
+              description={!addon ? "Needs the add-on build (ReShade version page)."
+                : !DXGI_APIS.includes(effective) ? "Works only with DirectX 10/11/12 games."
+                : renodxOn ? "Off while the RenoDX mod is on: use one or the other."
+                : `Turns SDR into HDR on HDR screens; turn on HDR in Steam's display settings too. Adds ${state.autohdr_env.join(" ")}.${state.reshade.autohdr_ready ? "" : " Downloads the add-on first (about 150 KB)."}`}
+              onChange={on => info.enabled ? apply(true, { autohdr: on }) : setInfo({ ...info, autohdr: on })} />,
+          )}
+          {row(
+            <Field label="RenoDX mod" description={mod ? <>
+              <div style={mod.status === "working" ? okText : warnText}>{RENODX_STATUS[mod.status] ?? `⚠️ ${mod.note}`}</div>
+              <div>{mod.name} · by {mod.maintainer}{mod.status !== "other" && mod.note ? ` · ${mod.note}` : ""}</div>
+            </> : state.renodx.count ? "No RenoDX mod in the list matches this game; you can pick one below."
+              : "The RenoDX list is not loaded yet (ReShade version page → Refresh RenoDX list)."} />,
+          )}
+          {row(
+            <ToggleField label="Use the RenoDX mod" checked={renodxOn}
+              disabled={busyHere || !addon || !!info.autohdr || (!renodxOn && (!info.enabled && !supported || !renodx || (!!mod && !modFits)))}
+              description={!addon ? "Needs the add-on build (ReShade version page)."
+                : info.autohdr ? "Off while AutoHDR is on: use one or the other."
+                : !renodx ? "Pick a mod below."
+                : mod && !modFits ? (mod.files.length ? `This mod is only ${mod.files.map(b => `${b}-bit`).join(" and ")}; the executable is ${info.bits}-bit.`
+                  : `Only on Nexus Mods or Discord, install it by hand: ${mod.page}`)
+                : `Downloads the mod from its author and puts it next to ReShade. Adds ${state.autohdr_env.join(" ")}; turn on HDR in Steam's display settings.`}
+              onChange={on => apply(on || !!info.enabled, { renodx: on ? renodx : "" })} />,
+          )}
+          {renodxOn && row(
+            <ButtonItem layout="below" disabled={busyHere} onClick={() => apply(true)} description="Downloads the newest snapshot of the mod again.">
+              Update RenoDX mod
+            </ButtonItem>,
+          )}
+          {mods && mods.length > 0 && row(
+            <DropdownItem layout="below" childrenContainerWidth="max" label="Another RenoDX mod" disabled={busyHere} selectedOption={renodx || null}
+              strDefaultLabel="None" description="Only if the matched one is wrong or none was found."
+              rgOptions={mods.map(m => ({ data: m.name, label: `${renodxBadge(m.status)} ${m.name}${m.name === info.renodx?.auto ? " (matched)" : ""}` }))}
+              onChange={o => renodxOn ? apply(true, { renodx: o.data }) : load(info.exe ?? "", o.data)} />,
+          )}
+        </PanelSection>
+
+        <PanelSection title="Advanced">
+          {row(
+            <DropdownItem layout="below" childrenContainerWidth="max" label="Executable" disabled={busyHere} selectedOption={info.exe}
+              description={`${info.bits}-bit. ReShade goes into this file's folder; pick the one that runs the game.`}
+              rgOptions={(info.candidates ?? []).map(c => ({ data: c.exe, label: `${c.exe} (${c.bits}-bit)${c.running ? ", running now" : ""}` }))}
+              onChange={o => info.enabled ? apply(true, { exe: o.data }) : load(o.data, renodx)} />,
+          )}
+          {row(
+            <DropdownItem layout="below" childrenContainerWidth="max" label="Graphics API" disabled={busyHere} selectedOption={api ?? "auto"}
+              description={info.detected_how === "default" ? "Could not be read from the game; DirectX 10/11/12 is the most common."
+                : detected === "vulkan" ? "Vulkan games are not supported. If the game also has a DirectX mode, pick that here."
+                : "If ReShade does not appear, try another one; dinput8 works with most games as a last resort."}
+              rgOptions={[{ data: "auto", label: `Auto: ${API_LABEL[detected] ?? detected}` }, ...APIS.map(a => ({ data: a, label: API_LABEL[a] }))]}
+              onChange={o => {
+                const chosen = o.data === "auto" ? null : o.data as string;
+                setApi(chosen);
+                const next = chosen ?? detected;
+                if (info.enabled && (APIS as readonly string[]).includes(next)) apply(true, { api: next });
+              }} />,
+          )}
+          {row(
+            <ButtonItem layout="below" disabled={!info.log?.found}
+              onClick={() => getLogs(game.appid).then(l => showText(`ReShade log · ${game.name}`, l.reshade), e => notify("DeckyReshade", String(e)))}>
+              Show ReShade log
+            </ButtonItem>,
+          )}
+        </PanelSection>
+      </>
     );
   };
 
@@ -844,7 +1020,7 @@ export default definePlugin(() => {
 
   return {
     name: "DeckyReshade",
-    titleView: <div className={staticClasses.Title}>DeckyReshade</div>,
+    titleView: <div className={staticClasses.Title}>ReShade</div>,
     content: <Content />,
     icon: <ReshadeIcon />,
     onDismount() {
