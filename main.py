@@ -74,6 +74,13 @@ def _write_json(path, data):
     os.replace(tmp, path)
 
 
+def _dlo_original(appid):
+    """The launch options Decky Launch Options stores as a game's original ('' when it has none); read only."""
+    profile = _read_json(os.path.join(_home(), ".dlo", "settings.json")).get("profiles", {}).get(str(appid), {})
+    value = profile.get("originalLaunchOptions") if isinstance(profile, dict) else ""
+    return value if isinstance(value, str) else ""
+
+
 def _load_settings(path):
     saved = _read_json(path)
     settings = {k: saved[k] if type(saved.get(k)) is type(v) else v for k, v in DEFAULT_SETTINGS.items()}
@@ -226,6 +233,7 @@ class Plugin:
         except OSError as e:
             decky.logger.error(f"RenoDX list not saved: {e}")
         self._match_renodx()
+        decky.logger.info(f"RenoDX: {len(self.renodx_match)} game(s) in the library have a mod")
         return await self.get_state()
 
     async def get_renodx_mods(self) -> dict:
@@ -391,7 +399,7 @@ class Plugin:
         await _ready.wait()
         game = self._game(appid)
         if not game:
-            return {"ok": False, "error": "Game not found; rescan the library."}
+            return {"ok": False, "error": "Game not found; close and reopen this menu to rescan the library."}
         found = await asyncio.to_thread(reshade_games.inspect, game)
         entry = self.manifest.entries.get(appid)
         candidates = found["candidates"]
@@ -416,13 +424,17 @@ class Plugin:
                 "log": reshade_diag.reshade_log(folder)}
 
     async def enable_game(self, appid: int, exe: str, api: str, autohdr: bool, renodx: str,
-                          launch_options: str) -> dict:
+                          launch_options: str, dlo_installed: bool = False) -> dict:
         """Set ReShade up for one game, with AutoHDR or a RenoDX mod (by its name in the list); when it already is
-        with other choices, that is undone first. A RenoDX mod is downloaded again each time (snapshot builds)."""
+        with other choices, that is undone first. A RenoDX mod is downloaded again each time (snapshot builds).
+
+        dlo_installed: Decky Launch Options is running. It takes over a game's launch options whenever the game's
+        library page is shown (they become its stored original), so anything written there could not be taken out
+        again; its ReShade tab is used instead and the launch options are left alone."""
         await _ready.wait()
         game = self._game(appid)
         if not game:
-            return {"ok": False, "error": "Game not found; rescan the library."}
+            return {"ok": False, "error": "Game not found; close and reopen this menu to rescan the library."}
         if api not in reshade_games.APIS:
             return {"ok": False, "error": "Pick the graphics API by hand: Vulkan games are not supported yet."}
         if not self._installed():
@@ -439,13 +451,13 @@ class Plugin:
         install_dir = os.path.realpath(game["install_dir"])
         path = os.path.realpath(os.path.join(install_dir, exe))
         if not path.startswith(install_dir + os.sep) or not os.path.isfile(path):
-            return {"ok": False, "error": "That executable is not in the game's folder any more; rescan."}
+            return {"ok": False, "error": "That executable is not in the game's folder any more; close and reopen this menu."}
         info = reshade_games.pe_info(path)
         if not info:
             return {"ok": False, "error": "That file is not a Windows executable."}
         options = self._current_options(game, launch_options)
         # A game Decky Launch Options runs gets its ReShade option there; we only put the files in place.
-        dlo = reshade_install.dlo_managed(options)
+        dlo = dlo_installed or reshade_install.dlo_managed(options)
         decky.logger.info(f"enable {appid} '{game['name']}': {exe} {info['bits']}-bit api={api} autohdr={autohdr} "
                           f"renodx={renodx!r} dlo={dlo} options before: {options!r}")
         async with self.lock:
@@ -468,9 +480,9 @@ class Plugin:
                     reshade_install.autohdr_preset() if autohdr else None)
                 self.manifest.entries[appid].update(autohdr=bool(autohdr), renodx=renodx, renodx_file=renodx_file)
                 await asyncio.to_thread(self.manifest.save)
-            except (reshade_install.InstallError, reshade_release.ReleaseError, reshade_shaders.ShaderError,
-                    reshade_renodx.RenoDXError) as e:
-                decky.logger.error(f"enable {appid} failed: {e}")
+            # any failure: the panel must still get the options, which a first disable() may already have restored
+            except Exception as e:
+                decky.logger.exception(f"enable {appid} failed")
                 return {"ok": False, "error": str(e), "launch_options": options}
         decky.logger.info(f"enable {appid} done, options after: {options!r}")
         return {"ok": True, "launch_options": options, "dlo": dlo}
@@ -480,8 +492,16 @@ class Plugin:
         game = self._game(appid)
         options = self._current_options(game, launch_options) if game else launch_options
         async with self.lock:
-            result = await asyncio.to_thread(reshade_install.disable, self.manifest, appid, options)
+            try:
+                result = await asyncio.to_thread(reshade_install.disable, self.manifest, appid, options)
+            except Exception as e:  # the game stays set up; Steam's launch options are left as they are
+                decky.logger.exception(f"disable {appid} failed")
+                return {"ok": False, "error": str(e)}
         decky.logger.info(f"disable {appid}: kept={result['kept']} options {options!r} -> {result['launch_options']!r}")
+        left = reshade_install.dlo_leftover(_dlo_original(appid))
+        if left:
+            decky.logger.warning(f"disable {appid}: Decky Launch Options still stores {left!r}")
+            result["dlo_leftover"] = left
         return {"ok": True, **result}
 
     async def session_started(self, appid: int) -> dict:
@@ -554,9 +574,10 @@ class Plugin:
         """A text report in the Downloads folder, for a bug report."""
         await _ready.wait()
         try:
-            path = await asyncio.to_thread(self._report)
-        except OSError as e:
-            decky.logger.error(f"report: {e}")
+            async with self.lock:  # the manifest is not read while a game is being changed
+                path = await asyncio.to_thread(self._report)
+        except Exception as e:
+            decky.logger.exception("report failed")
             return {"error": f"The report could not be saved: {e}"}
         decky.logger.info(f"report saved: {path}")
         return {"path": path}

@@ -21,6 +21,7 @@ import re
 import shutil
 import time
 
+from reshade_games import APIS
 from reshade_net import sha256_file
 
 COMPILER = "d3dcompiler_47.dll"
@@ -63,6 +64,17 @@ def launch_word(api):
     return _overrides_word(our_overrides(api))
 
 
+def dlo_leftover(options):
+    """The WINEDLLOVERRIDES word in options when it still holds a ReShade proxy override (with d3dcompiler_47=n,b,
+    as this plugin writes it), else ''. Used on what Decky Launch Options stores for a game."""
+    for word in (options or "").split():
+        match = _OVERRIDES.match(word)
+        entries = match.group(2).split(";") if match else []
+        if "d3dcompiler_47=n,b" in entries and any(e.split("=")[0] in APIS for e in entries):
+            return word
+    return ""
+
+
 def dlo_managed(options):
     """Whether Decky Launch Options runs this game (its options are then ~/.dlo/run %command%, and DLO puts back
     the options it keeps whenever it restores them, so ours would not last)."""
@@ -95,6 +107,10 @@ def with_overrides(options, ours, env=()):
     %command% added when the options had none. Another value for one of our variables is replaced."""
     keys = {_env_key(w) for w in env}
     words = [w for w in (options or "").split() if _env_key(w) not in keys]
+    # words are split on spaces; a quoted value holding one would be cut apart and rejoined wrongly
+    if any(w.count('"') % 2 or w.count("'") % 2 for w in words):
+        raise InstallError("these launch options quote text with spaces in it, which the plugin will not edit: turn "
+                           "off \"Set launch options automatically\" and add the WINEDLLOVERRIDES entries yourself")
     names = {e.split("=", 1)[0].lower() for e in ours}
     for i, word in enumerate(words):
         match = _OVERRIDES.match(word)
@@ -259,6 +275,7 @@ def enable(manifest, game, exe, api, bits, sources, shaders_dir, launch_options,
         raise InstallError(f"{name} already exists in the game folder and is not ours (another ReShade or a mod?); "
                            "leaving it alone")
 
+    new_options = with_overrides(launch_options, our_overrides(api), env) if launch else None  # may refuse: first
     # Our entries can already be there (left by an earlier install); they are never part of the user's original.
     original = without_overrides(launch_options, "", None, our_overrides(api), env) if launch_options else ""
     entry = old or {"name": game["name"], "target_dir": target, "files": {}, "launch_original": original}
@@ -283,7 +300,6 @@ def enable(manifest, game, exe, api, bits, sources, shaders_dir, launch_options,
     except OSError as e:
         raise InstallError(f"could not write to the game folder: {e}") from e
 
-    new_options = with_overrides(launch_options, our_overrides(api), env) if launch else None
     if launch:
         entry["launch_applied"] = new_options
     entry["enabled_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
@@ -324,6 +340,8 @@ def disable(manifest, appid, launch_options):
     entry = manifest.entries.get(appid)
     if not entry:
         return {"launch_options": (launch_options or "").strip(), "kept": []}
+    if not os.path.isdir(entry["target_dir"]):  # an SD card taken out: forgetting the game would orphan its files
+        raise InstallError("the game's folder is not available (is its SD card in?); nothing was changed")
     kept = []
     for name, digest in entry["files"].items():
         path = os.path.join(entry["target_dir"], name)

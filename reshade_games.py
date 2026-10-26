@@ -19,10 +19,10 @@ MACHINE_BITS = {0x14C: 32, 0x8664: 64}
 APIS = ("dxgi", "d3d9", "d3d10", "d3d11", "d3d12", "opengl32", "dinput8")
 # The APIs that present through DXGI, the only ones the AutoHDR add-on can switch to HDR.
 DXGI_APIS = ("dxgi", "d3d10", "d3d11", "d3d12")
-# Lower-case name fragments of anti-cheat files and folders: EAC, BattlEye, Vanguard, XIGNCODE, nProtect GameGuard,
-# PunkBuster, EQU8.
+# Lower-case name fragments of anti-cheat files and folders: EAC, BattlEye, XIGNCODE, nProtect GameGuard, PunkBuster,
+# EQU8. Not "vanguard": Riot's lives outside game folders, and the word names game files (Mass Effect's Vanguard class).
 ANTICHEAT = ("easyanticheat", "battleye", "beservice", "start_protected_game.exe", "eac_launcher",
-             "vanguard", "xigncode", "gameguard", "npgamemon", "punkbuster", "pbsvc", "equ8")
+             "xigncode", "gameguard", "npgamemon", "punkbuster", "pbsvc", "equ8")
 # Executables that are rarely the game: installers, redistributables, crash reporters, anti-cheat bootstrappers.
 NOT_GAME = re.compile(r"unins|setup|install|redist|vcredist|dxsetup|directx|dotnet|crash|report|helper|"
                       r"easyanticheat|battleye|start_protected|eac_launcher|cefprocess|webhelper|ue4prereq|"
@@ -241,24 +241,68 @@ def detect_api(exe_path):
     """(api, how): api is one of APIS or "vulkan" (which a DLL cannot hook); how is imports, strings or default.
 
     Unity games render from UnityPlayer.dll next to a small launcher exe, so that file is read along with the exe.
+    Only a DirectX 10-12 import decides on its own. Engines link OpenGL as a fallback while loading Direct3D at run
+    time (Unity imports only opengl32 and runs DirectX 11), and big DirectX 12 games import d3d9 for side jobs
+    (Red Dead Redemption 2), so the DLL names the files mention are read too, and newer DirectX wins. When the exe
+    says nothing (the engine is a DLL beside it, as in Hades), the imports of the DLLs in its folder are read.
     """
+    folder = os.path.dirname(exe_path)
     files = [exe_path]
-    unity = os.path.join(os.path.dirname(exe_path), "UnityPlayer.dll")
+    unity = os.path.join(folder, "UnityPlayer.dll")
     if os.path.isfile(unity):
         files.append(unity)
     imported = set()
     for path in files:
         imported |= (pe_info(path) or {}).get("imports", set())
     api = _api_from(imported)
-    if api:
+    if api == "dxgi":
         return api, "imports"
     wanted = (b"d3d12.dll", b"d3d11.dll", b"d3d10.dll", b"dxgi.dll", b"d3d9.dll", b"d3d8.dll", b"opengl32.dll",
               b"vulkan-1.dll")
     mentioned = set()
     for path in files:
         mentioned |= {n.decode() for n in _mentions(path, wanted)}
-    api = _api_from(mentioned)
-    return (api, "strings") if api else ("dxgi", "default")
+    found = _api_from(imported | mentioned)
+    if found:
+        return found, "imports" if found == api else "strings"
+    found = _api_from(_folder_imports(folder))
+    return (found, "imports") if found else ("dxgi", "default")
+
+
+# What the plugin itself puts next to a game; never evidence of the game's API.
+OURS = {f"{api}.dll" for api in APIS} | {"d3dcompiler_47.dll"}
+MAX_FOLDER_DLLS = 64
+
+
+def _folder_imports(folder):
+    """The imports of the DLLs beside an exe."""
+    try:
+        names = [n for n in os.listdir(folder) if n.lower().endswith(".dll") and n.lower() not in OURS]
+    except OSError:
+        return set()
+    imported = set()
+    for name in sorted(names)[:MAX_FOLDER_DLLS]:
+        imported |= (pe_info(os.path.join(folder, name)) or {}).get("imports", set())
+    return imported
+
+
+def running_exes():
+    """Lower-case paths, with forward slashes, of the .exe files running processes were started with (under Proton
+    a Windows path such as S:\\steamapps\\common\\Hades\\x64\\Hades.exe)."""
+    found = set()
+    try:
+        pids = [p for p in os.listdir("/proc") if p.isdigit()]
+    except OSError:
+        return found
+    for pid in pids:
+        try:
+            with open(f"/proc/{pid}/cmdline", "rb") as f:
+                args = f.read(4096).split(b"\0")
+        except OSError:
+            continue
+        found.update(a.decode("utf-8", "replace").replace("\\", "/").lower() for a in args[:3]
+                     if a.lower().endswith(b".exe"))
+    return found
 
 
 def _score(rel, size, game_name):
@@ -272,6 +316,8 @@ def _score(rel, size, game_name):
         score += 200
     if "launcher" in name:
         score -= 300
+    if re.search(r"(vk|vulkan)[^/]*/|vulkan", rel.lower()):
+        score -= 400  # a game's Vulkan build (Hades' x64Vk): ReShade cannot hook it, its DirectX build is the one
     if NOT_GAME.search(name):
         score -= 1000  # still listed: a game can be called "Crash ..." or "... Server"
     return score - 5 * rel.count("/")
@@ -284,7 +330,7 @@ def inspect(game):
     """
     install_dir = game["install_dir"]
     base_depth = install_dir.rstrip(os.sep).count(os.sep)
-    found, anticheat = [], False
+    found, anticheat, running = [], False, running_exes()
     for root, dirs, files in os.walk(install_dir):
         names = [n.lower() for n in dirs + files]
         if any(marker in n for n in names for marker in ANTICHEAT):
@@ -303,8 +349,15 @@ def inspect(game):
                 size = os.path.getsize(path)
             except OSError:
                 continue
-            # a shortcut names its exe: that one comes first
-            score = 1e9 if rel == game.get("exe") else _score(rel, size, game["name"])
-            found.append((score, {"exe": rel, "bits": info["bits"]}))
+            # the exe the game is running right now wins (by the usual score among several: Unity runs its crash
+            # handler beside the game), then the one a shortcut names
+            candidate = {"exe": rel, "bits": info["bits"]}
+            score = _score(rel, size, game["name"])
+            if any(p == rel.lower() or p.endswith("/" + rel.lower()) for p in running):
+                candidate["running"] = True
+                score += 2e9
+            elif rel == game.get("exe"):
+                score += 1e9
+            found.append((score, candidate))
     found.sort(key=lambda item: -item[0])
     return {"candidates": [c for _, c in found[:MAX_CANDIDATES]], "anticheat": anticheat}

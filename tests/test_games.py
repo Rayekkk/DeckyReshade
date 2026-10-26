@@ -7,6 +7,7 @@ import os
 import struct
 import tempfile
 import unittest
+from unittest import mock
 
 import _harness  # noqa: F401
 import reshade_games as G
@@ -96,6 +97,10 @@ class Executables(unittest.TestCase):
             "dx9.exe": (make_pe(32, ["d3d9.dll"]), ("d3d9", "imports")),
             "dx8.exe": (make_pe(32, ["d3d8.dll"]), ("d3d9", "imports")),  # through DXVK's d3d8 on d3d9
             "gl.exe": (make_pe(64, ["OPENGL32.dll"]), ("opengl32", "imports")),
+            # links OpenGL as a fallback but loads Direct3D 11 at run time (Unity's UnityPlayer.dll does this)
+            "fallback.exe": (make_pe(64, ["OPENGL32.dll"], b"\0" * 100 + b"d3d11.dll\0dxgi.dll\0"), ("dxgi", "strings")),
+            # imports d3d9 for side jobs but renders with DirectX 12 (Red Dead Redemption 2 does this)
+            "dx12d3d9.exe": (make_pe(64, ["d3d9.dll"], b"d3d12.dll\0dxgi.dll\0"), ("dxgi", "strings")),
             # loads Direct3D at run time: only the name appears in the file
             "dynamic.exe": (make_pe(64, [], b"\0" * 5000 + b"D3D9.DLL\0"), ("d3d9", "strings")),
             "vk.exe": (make_pe(64, ["vulkan-1.dll"]), ("vulkan", "imports")),
@@ -104,6 +109,13 @@ class Executables(unittest.TestCase):
         for name, (data, want) in cases.items():
             _write(os.path.join(d, name), data)
             self.assertEqual(G.detect_api(os.path.join(d, name)), want, name)
+
+    def test_engine_dll_beside_a_silent_exe(self):
+        d = tempfile.mkdtemp()
+        _write(os.path.join(d, "Hades.exe"), make_pe(64, ["kernel32.dll"]))
+        _write(os.path.join(d, "EngineWin64s.dll"), make_pe(64, ["d3d11.dll"]))
+        _write(os.path.join(d, "opengl32.dll"), make_pe(64, ["vulkan-1.dll"]))  # one of ours: never evidence
+        self.assertEqual(G.detect_api(os.path.join(d, "Hades.exe")), ("dxgi", "imports"))
 
     def test_unity_player_is_read_with_the_launcher(self):
         d = tempfile.mkdtemp()
@@ -131,6 +143,20 @@ class Executables(unittest.TestCase):
         self.assertEqual(exes[-1], "unins000.exe")  # listed, but last
         self.assertNotIn("_CommonRedist/vcredist_x64.exe", exes)
         self.assertTrue(found["anticheat"])
+
+    def test_inspect_prefers_the_running_exe(self):
+        root = tempfile.mkdtemp()
+        install = _app(root, 1, "Hades", "Hades")
+        _write(os.path.join(install, "x64", "Hades.exe"), make_pe(64))
+        _write(os.path.join(install, "x64Vk", "Hades.exe"), make_pe(64, [], b"\0" * 3_000_000))
+        _write(os.path.join(install, "Content", "SFXCharacterClass_Vanguard.pcc"), b"")  # not an anti-cheat
+        with mock.patch.object(G, "running_exes", return_value={"s:/steamapps/common/hades/x64/hades.exe"}):
+            found = G.inspect({"name": "Hades", "install_dir": install})
+        self.assertEqual(found["candidates"][0], {"exe": "x64/Hades.exe", "bits": 64, "running": True})
+        self.assertFalse(found["anticheat"])
+        # not running: the DirectX build still comes before the bigger Vulkan one
+        with mock.patch.object(G, "running_exes", return_value=set()):
+            self.assertEqual(G.inspect({"name": "Hades", "install_dir": install})["candidates"][0]["exe"], "x64/Hades.exe")
 
     def test_inspect_matches_the_game_name(self):
         root = tempfile.mkdtemp()

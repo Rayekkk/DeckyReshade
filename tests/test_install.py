@@ -74,6 +74,11 @@ class LaunchOptions(unittest.TestCase):
         for options in ("", "%command% ~/.dlo/running", "gamemoderun %command%"):
             self.assertFalse(I.dlo_managed(options), options)
         self.assertEqual(I.launch_word("d3d9"), 'WINEDLLOVERRIDES="d3dcompiler_47=n,b;d3d9=n,b"')
+        # what Decky Launch Options keeps after it took over a game we had set up
+        self.assertEqual(I.dlo_leftover('WINEDLLOVERRIDES="d3dcompiler_47=n,b;dxgi=n,b" %command%'),
+                         'WINEDLLOVERRIDES="d3dcompiler_47=n,b;dxgi=n,b"')
+        for clean in ("", "%command%", 'WINEDLLOVERRIDES="xinput1_3=n,b" %command%', "WINEDLLOVERRIDES=dxgi=n,b %command%"):
+            self.assertEqual(I.dlo_leftover(clean), "", clean)
 
 
 class Ini(unittest.TestCase):
@@ -140,6 +145,22 @@ class InstallRollback(unittest.TestCase):
                  env=["DXVK_HDR=1"], preset=I.autohdr_preset())
         with open(os.path.join(self.target, I.PRESET), "rb") as f:
             self.assertEqual(f.read(), b"Techniques=Mine@Mine.fx")
+
+    def test_quoted_text_with_spaces_is_refused_before_anything_is_written(self):
+        with self.assertRaises(I.InstallError):
+            self.enable('WINEDLLOVERRIDES="winmm=n,b; version=n,b" %command%')
+        self.assertEqual(os.listdir(self.target), ["game.exe"])
+        self.assertEqual(self.manifest.entries, {})
+
+    def test_folder_gone_keeps_the_game_set_up(self):
+        options = self.enable()
+        os.rename(self.target, self.target + ".away")  # its SD card taken out
+        with self.assertRaises(I.InstallError):
+            I.disable(self.manifest, 7, options)
+        self.assertIn(7, self.manifest.entries)
+        os.rename(self.target + ".away", self.target)
+        I.disable(self.manifest, 7, options)
+        self.assertFalse(os.path.exists(os.path.join(self.target, "dxgi.dll")))
 
     def test_foreign_dll_stops_the_install(self):
         _file(os.path.join(self.target, "dxgi.dll"), b"another reshade")

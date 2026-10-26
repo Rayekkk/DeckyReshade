@@ -8,6 +8,7 @@ SHA-256 when one is given), so a dropped connection or a full SD card never leav
 """
 
 import hashlib
+import http.client
 import os
 import ssl
 import urllib.error
@@ -62,7 +63,7 @@ def get(url, limit, headers=None):
     try:
         with _open(url, headers) as response:
             data = response.read(limit + 1)
-    except (urllib.error.URLError, OSError) as e:
+    except (urllib.error.URLError, OSError, http.client.HTTPException) as e:
         raise NetError(_describe(url, e)) from e
     if len(data) > limit:
         raise NetError(f"{url} sent more data than expected")
@@ -75,6 +76,7 @@ def download(url, dest, limit, sha256=None, progress=None):
     digest, count = hashlib.sha256(), 0
     try:
         with _open(url) as response, open(tmp, "wb") as f:
+            expected = response.getheader("Content-Length")
             while chunk := response.read(CHUNK):
                 count += len(chunk)
                 if count > limit:
@@ -83,10 +85,13 @@ def download(url, dest, limit, sha256=None, progress=None):
                 f.write(chunk)
                 if progress:
                     progress(count)
+        # a connection dropped mid-file ends the read quietly; files without a known hash need this check
+        if expected and expected.isdigit() and count != int(expected):
+            raise NetError(f"the download of {url} stopped early")
         if sha256 and digest.hexdigest() != sha256:
             raise NetError(f"{url} does not match its known SHA-256")
         os.replace(tmp, dest)
-    except (urllib.error.URLError, OSError) as e:
+    except (urllib.error.URLError, OSError, http.client.HTTPException) as e:
         raise NetError(_describe(url, e)) from e
     finally:
         if os.path.exists(tmp):

@@ -224,7 +224,18 @@ class Flow(unittest.TestCase):
             # a game Decky Launch Options runs: files go in, its launch options are left to DLO
             res = await p.enable_game(70, "Game.exe", "dxgi", False, "", "~/.dlo/run %command%")
             self.assertEqual(res, {"ok": True, "launch_options": "~/.dlo/run %command%", "dlo": True})
-            await p.disable_game(70, "~/.dlo/run %command%")
+            # DLO kept ReShade's overrides as the game's original: the panel is told to switch them off there
+            os.makedirs(os.path.join(decky.DECKY_USER_HOME, ".dlo"))
+            with open(os.path.join(decky.DECKY_USER_HOME, ".dlo", "settings.json"), "w") as f:
+                f.write('{"profiles": {"70": {"originalLaunchOptions": '
+                        '"WINEDLLOVERRIDES=\\"d3dcompiler_47=n,b;dxgi=n,b\\" %command%"}}}')
+            res = await p.disable_game(70, "~/.dlo/run %command%")
+            self.assertEqual((res["launch_options"], res["dlo_leftover"]),
+                             ("~/.dlo/run %command%", 'WINEDLLOVERRIDES="d3dcompiler_47=n,b;dxgi=n,b"'))
+            # Decky Launch Options installed: launch options are never written, whatever they are now
+            res = await p.enable_game(70, "Game.exe", "dxgi", False, "", "-novid", True)
+            self.assertEqual(res, {"ok": True, "launch_options": "-novid", "dlo": True})
+            await p.disable_game(70, "-novid")
 
             state = await p.remove_data()
             self.assertEqual(state["job"]["error"], "")
