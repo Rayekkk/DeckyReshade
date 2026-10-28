@@ -6,11 +6,16 @@
 The list of mods is the "Mods" page of the RenoDX wiki: a Markdown table of name, maintainer, download badges and a
 status (:white_check_mark: working, :construction: in progress, or a word such as "Abandoned"; a link title holds a
 note). Only the main list is read; engine-wide mods need per-game tweaking and are left out. A mod can be installed
-here when the table links its .addon64/.addon32 file directly (the authors' GitHub Pages or GitHub releases); mods only
-on Nexus Mods or Discord are shown with their status but must be installed by hand.
+here when the table links its .addon64/.addon32 file directly, from the GitHub Pages or GitHub releases of an author
+in AUTHORS; mods only on Nexus Mods or Discord, or from anyone else, are shown with their status and a link and must
+be installed by hand.
 
-Snapshot builds change often and carry no checksum, so a download is accepted when it comes over HTTPS from one of
-those hosts and is a Windows DLL of the expected bitness.
+The wiki is open to any GitHub user, so the list alone cannot say what is safe to put into a game. A file is
+installed only from a known author's GitHub release (<author>.github.io/<repo>/<file> is published as the release
+"snapshot" of github.com/<author>/<repo>), and only when it matches the SHA-256 GitHub reports for that release asset
+and is a Windows DLL of the expected bitness. Snapshot builds change daily, so their sums cannot be pinned here;
+GitHub's own sum guards against a changed list, a bad mirror or a cut-off download, not against a taken-over author
+account.
 """
 
 import os
@@ -18,15 +23,29 @@ import re
 import unicodedata
 import urllib.parse
 
-import reshade_net as net
+import dk_fs
+import dk_net
+from dk_update import ASSET_HOSTS as GITHUB_DOWNLOADS
 from reshade_games import pe_info
 
 LIST_URL = "https://raw.githubusercontent.com/wiki/clshortfuse/renodx/Mods.md"
 MAX_LIST = 4 << 20
 MAX_ADDON = 64 << 20
+MAX_RELEASE = 8 << 20  # GitHub's description of a release with 500+ assets is about 1 MB
+# GitHub accounts of the RenoDX authors whose add-ons can be installed from here: every account the wiki's mod list
+# linked a file from on 2026-10-27 (24 accounts, 275 files). A new author is added here and ships with a plugin release.
+AUTHORS = frozenset({
+    "akuru-q", "chrisboyer2", "clshortfuse", "commandgenius", "danaforever", "hartapfel", "hboyyt", "itsthesewerrat",
+    "izueh", "jhi721", "legoliamneeson", "marat569", "mohannedelfatih", "mqhaji", "notvoosh", "oopydoopy", "pmnoxx",
+    "rankftw", "sgtforgery", "skyline330", "souperman9", "steve161803", "theedmaster87", "toru77",
+})
 _FILE = re.compile(r"\((https://[^)\s]+?/([\w.-]+?\.addon(32|64)))\)")
 _LINK = re.compile(r"\[([^\]]*)\]\((https?://[^)\s]+)\)")
 _NOTE = re.compile(r'\(#\s*"([^"]*)"\)')
+_PAGES = re.compile(r"https://([A-Za-z0-9-]+)\.github\.io/([\w.-]+)/([\w.-]+\.addon(?:32|64))")
+_RELEASE = re.compile(r"https://github\.com/([A-Za-z0-9-]+)/([\w.-]+)/releases/download/([\w.-]+)/"
+                      r"([\w.-]+\.addon(?:32|64))")
+_DIGEST = re.compile(r"sha256:([0-9a-fA-F]{64})")
 
 
 class RenoDXError(Exception):
@@ -45,22 +64,25 @@ def base_key(name):
     return key(re.sub(r"\([^)]*\)", "", name))
 
 
+def source(url):
+    """(author, repo, release tag, file) of a mod file a known author publishes on GitHub, else None."""
+    if match := _PAGES.fullmatch(url or ""):
+        author, repo, tag, name = match[1], match[2], "snapshot", match[3]
+    elif match := _RELEASE.fullmatch(url or ""):
+        author, repo, tag, name = match.groups()
+    else:
+        return None
+    return (author, repo, tag, name) if author.lower() in AUTHORS else None
+
+
 def trusted(url):
-    """The hosts RenoDX authors publish snapshot builds on."""
-    parts = urllib.parse.urlsplit(url)
-    host = parts.hostname or ""
-    return parts.scheme == "https" and (host.endswith(".github.io") or
-                                        (host == "github.com" and "/releases/download/" in parts.path))
+    return source(url) is not None
 
 
 def host(url):
-    """Where a mod's file comes from, shown before it is installed: 'oopydoopy.github.io', 'github.com/mqhaji' (whose
-    releases), or '' for none."""
-    if not url:
-        return ""
-    parts = urllib.parse.urlsplit(url)
-    owner = parts.path.strip("/").split("/")[0] if parts.hostname == "github.com" else ""
-    return f"{parts.hostname}/{owner}" if owner else parts.hostname or ""
+    """Where a mod's file comes from, shown before it is installed: 'github.com/mqhaji', or '' for none."""
+    found = source(url)
+    return f"github.com/{found[0]}" if found else ""
 
 
 def _status(cell):
@@ -73,7 +95,8 @@ def _status(cell):
 
 
 def parse(text):
-    """Mods of the main list: {name, maintainer, status: working|wip|other, note, files: {"64"|"32": url}, page}."""
+    """Mods of the main list: {name, maintainer, status: working|wip|other, note, files: {"64"|"32": url}, page}.
+    files holds only known authors' files; a mod without any keeps a link (its page, or another file) in page."""
     try:
         section = text.split("\n# List", 1)[1]
     except IndexError as e:
@@ -85,10 +108,12 @@ def parse(text):
         if len(cells) < 4 or not line.startswith("|") or cells[0] in ("Name", "") or cells[0].startswith(":-"):
             continue
         name = _LINK.sub(r"\1", cells[0]).strip()
-        files = {bits: url for url, _, bits in _FILE.findall(cells[2]) if trusted(url)}
-        # badges are images inside links: [![Nexus Mods](badge)](page)
+        linked = _FILE.findall(cells[2])
+        files = {bits: url for url, _, bits in linked if trusted(url)}
+        # badges are images inside links: [![Nexus Mods](badge)](page); a file from an unknown author is a link only
         page = next((url for url in re.findall(r"\]\((https?://[^)\s]+)\)", cells[2])
-                     if "img.shields.io" not in url and not url.endswith((".addon64", ".addon32"))), "")
+                     if "img.shields.io" not in url and not url.endswith((".addon64", ".addon32"))), "") or \
+            next((url for url, _, _ in linked if not trusted(url)), "")
         status, note = _status(cells[3])
         if name:
             mods.append({"name": name, "maintainer": cells[1], "status": status, "note": note, "files": files,
@@ -98,10 +123,11 @@ def parse(text):
     return mods
 
 
-def fetch_list():
+def fetch_list(cancel=None):
     try:
-        return parse(net.get(LIST_URL, MAX_LIST).decode("utf-8", "replace"))
-    except net.NetError as e:
+        return parse(dk_net.get(LIST_URL, MAX_LIST, hosts={"raw.githubusercontent.com"}, cancel=cancel)
+                     .decode("utf-8", "replace"))
+    except dk_net.NetError as e:
         raise RenoDXError(f"Could not load the RenoDX mod list: {e}.") from e
 
 
@@ -115,19 +141,46 @@ def match(name, mods):
     return None
 
 
-def download(mod, bits, folder):
-    """Fetch a mod's add-on for one bitness into folder; returns its path."""
+def _asset(author, repo, tag, name, cancel):
+    """(address, size, SHA-256) of a release asset as GitHub describes it; RenoDXError when GitHub cannot vouch for it."""
+    api = f"https://api.github.com/repos/{author}/{repo}/releases/tags/{urllib.parse.quote(tag, safe='')}"
+    try:
+        release = dk_fs.parse_json(dk_net.get(api, MAX_RELEASE, hosts={"api.github.com"}, redirects=False,
+                                              headers={"Accept": "application/vnd.github+json"}, cancel=cancel),
+                                   dk_fs.require_object)
+    except dk_net.NetError as e:
+        if e.status == 404:
+            raise RenoDXError(f"{author} has no RenoDX release named {tag} on GitHub; install the mod by hand.") from e
+        raise RenoDXError(f"GitHub could not describe the RenoDX release of {author}: {e}.") from e
+    except ValueError as e:
+        raise RenoDXError("GitHub returned an unreadable RenoDX release.") from e
+    url = f"https://github.com/{author}/{repo}/releases/download/{tag}/{name}"
+    assets = [a for a in release.get("assets") or [] if isinstance(a, dict) and a.get("name") == name]
+    asset = assets[0] if len(assets) == 1 else {}
+    digest, size = _DIGEST.fullmatch(str(asset.get("digest"))), asset.get("size")
+    if (not digest or asset.get("state") != "uploaded" or type(size) is not int or not 0 < size <= MAX_ADDON
+            or str(asset.get("browser_download_url")).lower() != url.lower()):
+        raise RenoDXError(f"{name} is not in {author}'s release with a SHA-256 from GitHub; install the mod by hand.")
+    return asset["browser_download_url"], size, digest.group(1).lower()
+
+
+def download(mod, bits, folder, cancel=None):
+    """Fetch a mod's add-on for one bitness into folder, from its author's GitHub release and checked against the
+    SHA-256 GitHub reports for it; returns its path."""
     url = mod["files"].get(str(bits))
     if not url:
         have = " and ".join(f"{b}-bit" for b in sorted(mod["files"])) or "no direct download"
         raise RenoDXError(f"{mod['name']}: the RenoDX list has {have}, but this game is {bits}-bit.")
-    filename = _FILE.search(f"({url})").group(2)
+    found = source(url)
+    if not found:  # a list saved by an older version can still hold one
+        raise RenoDXError(f"{mod['name']} is not from a RenoDX author this plugin knows; install it by hand.")
+    address, size, sha256 = _asset(*found, cancel)
     os.makedirs(folder, exist_ok=True)
-    path = os.path.join(folder, filename)
+    path = os.path.join(folder, found[3])
     new = path + ".new"  # a failed update keeps the copy that worked
     try:
-        net.download(url, new, MAX_ADDON)
-    except net.NetError as e:
+        dk_net.download(address, new, size, sha256, hosts=GITHUB_DOWNLOADS, cancel=cancel)
+    except dk_net.NetError as e:
         raise RenoDXError(f"The RenoDX mod could not be downloaded: {e}.") from e
     if (pe_info(new) or {}).get("bits") != bits:
         os.remove(new)

@@ -221,7 +221,7 @@ def _mentions(path, names):
                 found.update(n for n in names if n in window)
                 tail = window[-32:]
     except OSError:
-        pass
+        pass  # an unreadable executable names no API: the caller falls back to the default
     return found
 
 

@@ -30,7 +30,7 @@ update. DeckyReshade does all of that from the Quick Access Menu and keeps track
 | **Non-Steam games** | Windows games and emulators added to Steam work like Steam games |
 | **AutoHDR** | HDR for SDR games on HDR screens (Steam Deck OLED, Legion Go 2 and other OLED handhelds), per game |
 | **RenoDX** | Every game in your library that has a [RenoDX](https://github.com/clshortfuse/renodx) HDR mod shows its status (✅ working or 🚧 in progress); one switch downloads and installs it |
-| **ReShade updates** | Latest ReShade from reshade.me, updated automatically in every game, or a fixed version (6.3.3 to 6.8.0) |
+| **ReShade updates** | The newest ReShade DeckyReshade has checksums for, updated automatically in every game, or a fixed version (6.3.3 to 6.8.0); a newer ReShade on reshade.me is announced and comes with a plugin update |
 | **Shader packages** | The same list ReShade's own installer offers, shared by all games, with updates |
 | **Safe launch options** | `WINEDLLOVERRIDES` entries are merged with what is already there and restored exactly when you turn ReShade off; [Decky Launch Options](https://github.com/Rayekkk/DeckyLaunchOptions) gets its own ReShade tab |
 | **Never fails silently** | Each game shows when ReShade last started and its errors; if it did not start twice in a row, you are told what to change |
@@ -119,9 +119,10 @@ Changing anything while ReShade is on sets the game up again with the new choice
   [Pumbo's AdvancedAutoHDR](https://github.com/Filoppi/PumboAutoHDR) in a first preset (only when the game has no
   preset yet). Fine-tune it in ReShade's menu.
 - **RenoDX** mods rebuild a game's tone mapping for real HDR. The list comes from the
-  [RenoDX wiki](https://github.com/clshortfuse/renodx/wiki/Mods) and is refreshed once a day; mods only on Nexus Mods
-  or Discord show their link to install by hand. Engine-wide mods (Unreal, Unity, Source) need per-game tweaks and
-  are not offered.
+  [RenoDX wiki](https://github.com/clshortfuse/renodx/wiki/Mods) and is refreshed once a day. A mod is installed
+  only from the GitHub release of a RenoDX author DeckyReshade knows, and only when it matches the checksum GitHub
+  publishes for it; mods only on Nexus Mods or Discord, or from another author, show their link to install by hand.
+  Engine-wide mods (Unreal, Unity, Source) need per-game tweaks and are not offered.
 - Both add `DXVK_HDR=1` to the launch options. Use one or the other: together they tone-map twice.
 
 ### Shaders
@@ -135,8 +136,9 @@ The standard effects and SweetFX come with setup. Any package from ReShade's own
 
 <a href="docs/screenshots/reshade-version.png"><img src="docs/screenshots/reshade-version.png" alt="ReShade version, build and launch options" width="360"></a>
 
-- **Version**: *Latest* is checked once a day and every game gets new versions by itself; a fixed version stays
-  until you change it (6.5.1 is the one to try when a DXVK HDR game breaks ReShade's menu).
+- **Version**: *Latest* is the newest version DeckyReshade has checksums for, and every game gets new versions by
+  itself; reshade.me is checked once a day, and a newer ReShade there is announced until a DeckyReshade update brings
+  it. A fixed version stays until you change it (6.5.1 is the one to try when a DXVK HDR game breaks ReShade's menu).
 - **Add-on build**: needed for AutoHDR, RenoDX and depth add-ons.
 - **Set launch options automatically** (on by default) puts `WINEDLLOVERRIDES="d3dcompiler_47=n,b;<api>=n,b"` in
   the game's launch options, next to anything already there; off leaves them to you.
@@ -182,8 +184,10 @@ game's ReShade log to one file; attach it with the game and what the page says.
 
 ReShade is not on GitHub. Its homepage links the current installer, and that link is the version check. The
 installer is a ZIP archive behind a Windows program, so the plugin reads `ReShade32.dll` and `ReShade64.dll`
-straight out of it and checks their PE headers. Known versions are checked against their SHA-256; if reshade.me
-cannot be read, the newest known version is used and nothing already set up changes. Proton's own
+straight out of it and checks their PE headers. reshade.me publishes no checksums, so only versions whose installers'
+SHA-256 the plugin carries are installed; a failed check changes nothing already set up. RenoDX snapshot builds
+change daily, so each one is checked against the SHA-256 GitHub reports for its author's release asset, and only the
+accounts of known RenoDX authors are used: the wiki that lists the mods can be edited by anyone. Proton's own
 `d3dcompiler_47` cannot compile ReShade's effects, so Microsoft's comes from Mozilla's fxc2 repository at a fixed
 commit, checked by SHA-256, and so does the AutoHDR add-on from its release.
 
@@ -214,16 +218,17 @@ Requires Node.js 24 and Python 3.11 or newer.
 
 ```bash
 npm ci --ignore-scripts --no-audit --no-fund
+npm run check          # everything below in one go
 npm run typecheck      # frontend types
 npm run test:backend   # Python backend tests
 npm run test:frontend  # panel tests (navigation, game page switches)
-npm run build          # compile the frontend
-npm run package        # create DeckyReshade-<version>.zip
+npm run build          # compile the frontend and check the bundle
+npm run package        # create artifacts/DeckyReshade-<version>.zip and its .sha256
 ```
 
 Install the result through Decky's **Install Plugin from ZIP**. GitHub Actions runs the backend tests on Linux and
-Windows and checks the frontend and the built ZIP, which must not contain any DLL or EXE. Steam, Decky and the
-download servers are mocked in the tests; game sessions still need testing on a handheld.
+Windows and checks the frontend and the built ZIP, which must not contain any DLL, EXE or add-on. Steam, Decky and
+the download servers are mocked in the tests; game sessions still need testing on a handheld.
 
 </details>
 
@@ -254,21 +259,28 @@ Not affiliated with ReShade, RenoDX or Valve.
 
 ## AI disclaimer
 
-This project was built with substantial help from an AI coding assistant. The plugin, its tests and this
-documentation were written by Anthropic's Claude Code working under my direction: I set the goal and the
-requirements (ReShade from its authors, the add-on build by default, safe launch options, a clean rollback, no
-silent failures), made the decisions and chose what was released.
+This project was built with substantial help from AI coding assistants. Most of the code,
+tests and documentation were written by AI agents (Anthropic's Claude Code) working under my
+direction: I defined what each feature should do, made the design and safety decisions,
+reviewed the results and chose what was released.
 
 The AI was used to:
 
-- research how ReShade, its installer, AutoHDR, RenoDX and Decky Launch Options work, from their code and files;
-- write the Decky plugin, its tests and this documentation;
-- review the code and test it on the handheld.
+- write the Python backend and the Decky panel;
+- build the automated test suites (about 200 tests run on Linux and Windows for every change);
+- audit the code for bugs, security issues and wasted work, with every finding checked by
+  independent review passes and, where possible, reproduced before it was fixed;
+- research how ReShade, its installer, AutoHDR, RenoDX and Decky Launch Options work, and write
+  this documentation.
 
-Tested on my Legion Go 2 in Gaming Mode: setup, ReShade 6.8.0 in Disco Elysium (DirectX 11) with the shaders
-compiling and the AutoHDR add-on loading, the RenoDX mod download for God of War, switching ReShade versions,
-launch options with Decky Launch Options, logs and the report, and executable and API detection across a 46-game
-library. HDR output and Direct3D 9 games still need more testing.
+Nothing here is untested AI output. I tested the plugin on my Legion Go 2 in Gaming Mode:
+setup, ReShade in DirectX 11 games with the shaders compiling and the AutoHDR add-on loading,
+RenoDX mod downloads, switching ReShade versions, launch options with and without Decky Launch
+Options, logs and the report, and executable and API detection across a 46-game library.
+Features were held back until they behaved correctly on the real device, and a checked SHA-256
+for every DLL and add-on placed in a game folder, and an exact rollback of each game's files and
+launch options, were kept as hard requirements. HDR output and Direct3D 9 games still need more
+testing.
 
-DeckyReshade places DLLs in your game folders. It is provided as is, without warranty (see [License](#license));
-use it at your own risk.
+Even so, this plugin changes files in your game folders. It is provided as is, without warranty
+(see [License](#license)); use it at your own risk.

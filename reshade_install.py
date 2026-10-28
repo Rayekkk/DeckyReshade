@@ -15,14 +15,14 @@ Rules that make rollback safe:
     are taken out.
 """
 
-import json
 import os
 import re
 import shutil
 import time
 
+import dk_fs
+from dk_fs import sha256_file
 from reshade_games import APIS
-from reshade_net import sha256_file
 
 COMPILER = "d3dcompiler_47.dll"
 INI = "ReShade.ini"
@@ -35,22 +35,41 @@ class InstallError(Exception):
     pass
 
 
+def _check_manifest(data):
+    """dk_fs's validate hook: app id -> an entry with the fields everything here relies on."""
+    dk_fs.require_object(data)
+    for appid, e in data.items():
+        if (not appid.isdigit() or not isinstance(e, dict)
+                or not all(isinstance(e.get(k), str) for k in ("name", "target_dir", "exe", "api"))
+                or type(e.get("bits")) is not int or not isinstance(e.get("files"), dict)
+                or not all(isinstance(k, str) and isinstance(v, str) for k, v in e["files"].items())):
+            raise ValueError(f"entry {appid!r} is not a game set up by this plugin")
+
+
 class Manifest:
-    """appid -> {name, target_dir, exe, api, bits, files: {name: sha256}, launch_original, launch_applied}"""
+    """appid -> {name, target_dir, exe, api, bits, files: {name: sha256}, launch_original, launch_applied}
+
+    It is the only record of what the plugin put into game folders. A damaged file comes back from its last-good
+    copy; when that is impossible (or the file cannot be read) `problem` says why and nothing is saved over it, so
+    the record is never lost to a later change."""
 
     def __init__(self, path):
-        self.path = path
+        self.path, self.entries, self.problem, self.recovered = path, {}, "", ""
         try:
-            with open(path, encoding="utf-8") as f:
-                self.entries = {int(k): v for k, v in json.load(f).items()}
-        except (OSError, ValueError, AttributeError):
-            self.entries = {}
+            loaded = dk_fs.load_json(path, {}, validate=_check_manifest)
+        except OSError as e:
+            self.problem = f"The list of games set up could not be read ({e.strerror or type(e).__name__})."
+            return
+        if loaded.status == "lost":
+            self.problem = ("The list of games set up is damaged, so no game can be changed. It is kept as it is; "
+                            "the Decky log has the details.")
+        self.recovered = loaded.detail if loaded.status in ("lost", "recovered") else ""
+        self.entries = {int(k): v for k, v in loaded.value.items()}
 
     def save(self):
-        tmp = self.path + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump({str(k): v for k, v in self.entries.items()}, f, indent=1)
-        os.replace(tmp, self.path)
+        if self.problem:
+            raise InstallError(self.problem)
+        dk_fs.write_json(self.path, {str(k): v for k, v in self.entries.items()})
 
 
 def our_overrides(api):
@@ -232,7 +251,7 @@ def _replace_via_tmp(dst, fill):
         try:
             os.remove(tmp)
         except OSError:
-            pass
+            pass  # the first error is the one to report
         raise
 
 

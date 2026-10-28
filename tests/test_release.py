@@ -3,6 +3,7 @@
 
 """ReShade version check, installer unpacking and the pinned fallback."""
 
+import hashlib
 import io
 import os
 import tempfile
@@ -11,7 +12,8 @@ import zipfile
 from unittest import mock
 
 import _harness  # noqa: F401
-import reshade_net
+import dk_fs
+import dk_net
 import reshade_release as R
 from _pe import make_pe
 
@@ -28,14 +30,14 @@ def installer(dll64=None, dll32=None):
 
 
 def serve(data):
-    """A stand-in for reshade_net.download that writes data and returns its hash like the real one."""
-    def download(url, dest, limit, sha256=None, progress=None):
+    """A stand-in for dk_net.download that writes data and returns its hash like the real one."""
+    def download(url, dest, limit, sha256=None, **kw):
         with open(dest, "wb") as f:
             f.write(data)
-        digest = reshade_net.sha256_file(dest)
+        digest = dk_fs.sha256_file(dest)
         if sha256 and digest != sha256:
             os.remove(dest)
-            raise reshade_net.NetError("does not match its known SHA-256")
+            raise dk_net.NetError("does not match its known SHA-256")
         download.urls.append(url)
         return digest
     download.urls = []
@@ -46,22 +48,32 @@ class LatestVersion(unittest.TestCase):
     def test_newest_linked_version_wins(self):
         page = (b'<a href="/downloads/ReShade_Setup_6.9.1.exe">x</a><a href="/downloads/ReShade_Setup_6.9.1_Addon.exe">'
                 b'</a> older: /downloads/ReShade_Setup_6.10.0_Addon.exe /downloads/ReShade_Setup_6.8.0.exe')
-        with mock.patch.object(reshade_net, "get", return_value=page):
+        with mock.patch.object(dk_net, "get", return_value=page):
             self.assertEqual(R.latest_version(), "6.10.0")
 
     def test_page_without_links_or_offline_is_an_error_not_a_guess(self):
-        with mock.patch.object(reshade_net, "get", return_value=b"<html>new design</html>"):
+        with mock.patch.object(dk_net, "get", return_value=b"<html>new design</html>"):
             self.assertRaises(R.ReleaseError, R.latest_version)
-        with mock.patch.object(reshade_net, "get", side_effect=reshade_net.NetError("could not reach reshade.me")):
+        with mock.patch.object(dk_net, "get", side_effect=dk_net.NetError("could not reach reshade.me")):
             self.assertRaises(R.ReleaseError, R.latest_version)
 
 
 class Fetch(unittest.TestCase):
     def setUp(self):
         self.root = tempfile.mkdtemp()
+        sha = hashlib.sha256(installer()).hexdigest()
+        patch = mock.patch.dict(R.KNOWN, {"6.9.0": {False: sha, True: sha}})
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def test_a_version_without_known_sums_is_never_downloaded(self):
+        with mock.patch.object(dk_net, "download", side_effect=AssertionError("downloaded")):
+            with self.assertRaisesRegex(R.ReleaseError, "no known SHA-256"):
+                R.fetch(self.root, "9.9.9", True)
+        self.assertEqual(os.listdir(self.root), [])
 
     def test_unpacks_both_dlls(self):
-        with mock.patch.object(reshade_net, "download", serve(installer())) as dl:
+        with mock.patch.object(dk_net, "download", serve(installer())) as dl:
             folder = R.fetch(self.root, "6.9.0", True)
         self.assertEqual(folder, os.path.join(self.root, "6.9.0-addon"))
         self.assertTrue(R.is_complete(folder))
@@ -69,20 +81,22 @@ class Fetch(unittest.TestCase):
         self.assertEqual(sorted(os.listdir(folder)), ["ReShade32.dll", "ReShade64.dll"])
 
     def test_already_there_is_not_downloaded_again(self):
-        with mock.patch.object(reshade_net, "download", serve(installer())):
+        with mock.patch.object(dk_net, "download", serve(installer())):
             R.fetch(self.root, "6.9.0", False)
-        with mock.patch.object(reshade_net, "download", side_effect=AssertionError("downloaded twice")):
+        with mock.patch.object(dk_net, "download", side_effect=AssertionError("downloaded twice")):
             R.fetch(self.root, "6.9.0", False)
 
     def test_wrong_bitness_or_not_an_installer_leaves_nothing(self):
         for data in (installer(dll64=make_pe(32)), installer(dll32=b"not a dll"), b"<html>error page</html>"):
-            with mock.patch.object(reshade_net, "download", serve(data)):
+            sha = hashlib.sha256(data).hexdigest()
+            with mock.patch.dict(R.KNOWN, {"6.9.0": {False: sha, True: sha}}), \
+                    mock.patch.object(dk_net, "download", serve(data)):
                 self.assertRaises(R.ReleaseError, R.fetch, self.root, "6.9.0", False)
             self.assertEqual(os.listdir(self.root), [])
 
     def test_known_versions_need_their_hash(self):
         for version in R.VERSIONS:
-            with mock.patch.object(reshade_net, "download", serve(installer())):
+            with mock.patch.object(dk_net, "download", serve(installer())):
                 self.assertRaises(R.ReleaseError, R.fetch, self.root, version, True)
         self.assertEqual(os.listdir(self.root), [])
         self.assertEqual(R.FALLBACK, R.VERSIONS[0])
@@ -103,20 +117,20 @@ class PinnedFiles(unittest.TestCase):
             root = tempfile.mkdtemp()
             calls = []
 
-            def download(url, dest, limit, sha256=None, progress=None):
+            def download(url, dest, limit, sha256=None, **kw):
                 calls.append((url, sha256))
                 with open(dest, "wb") as f:
                     f.write(b"x")
                 return sha256
 
-            with mock.patch.object(reshade_net, "download", download):
+            with mock.patch.object(dk_net, "download", download):
                 fetch(root)
             self.assertEqual(calls, [(c["url"], c["sha256"]) for c in files.values()])
             # files that already match are kept
             known = {path_for(root, bits): c for bits, c in files.items()}
             with mock.patch.object(R.os.path, "getsize", side_effect=lambda p: known[p]["size"]), \
-                    mock.patch.object(reshade_net, "sha256_file", side_effect=lambda p: known[p]["sha256"]), \
-                    mock.patch.object(reshade_net, "download", side_effect=AssertionError("downloaded again")):
+                    mock.patch.object(dk_fs, "sha256_file", side_effect=lambda p: known[p]["sha256"]), \
+                    mock.patch.object(dk_net, "download", side_effect=AssertionError("downloaded again")):
                 fetch(root)
 
 

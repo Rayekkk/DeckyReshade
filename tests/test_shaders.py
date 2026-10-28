@@ -11,7 +11,8 @@ import zipfile
 from unittest import mock
 
 import _harness  # noqa: F401
-import reshade_net
+import dk_fs
+import dk_net
 import reshade_shaders as S
 
 LIST = """
@@ -51,7 +52,7 @@ def archive(files):
 
 
 def serve(data):
-    def download(url, dest, limit, sha256=None, progress=None):
+    def download(url, dest, limit, sha256=None, **kw):
         with open(dest, "wb") as f:
             f.write(data)
     return download
@@ -93,7 +94,7 @@ class InstallRemove(unittest.TestCase):
         self.std, self.otis = S.parse_list(LIST)[:2]
 
     def install(self, package, files):
-        with mock.patch.object(reshade_net, "download", serve(archive(files))):
+        with mock.patch.object(dk_net, "download", serve(archive(files))):
             return S.install(self.root, package)
 
     def test_shared_header_stays_while_a_package_needs_it(self):
@@ -116,10 +117,10 @@ class InstallRemove(unittest.TestCase):
     def test_interrupted_install_leaves_no_untracked_files(self):
         real_replace, moved = os.replace, []
 
-        def replace(src, dst):
+        def replace(src, dst, **kw):
             if "Shaders" in dst and moved:
                 raise OSError("disk full")
-            real_replace(src, dst)
+            real_replace(src, dst, **kw)
             moved.append(dst)
 
         with mock.patch.object(S.os, "replace", replace):
@@ -132,9 +133,9 @@ class InstallRemove(unittest.TestCase):
         self.install(self.std, {"r/Shaders/Keep.fx": "x"})
         for files in ({"r/README.md": "no effects"}, None):
             data = archive(files) if files else b"<html>rate limited</html>"
-            with mock.patch.object(reshade_net, "download", serve(data)):
+            with mock.patch.object(dk_net, "download", serve(data)):
                 self.assertRaises(S.ShaderError, S.install, self.root, self.std)
-        self.assertEqual(sorted(os.listdir(self.root)), ["Shaders", "index.json"])
+        self.assertEqual(sorted(os.listdir(self.root)), ["Shaders", "index.json", "index.json.last-good"])
         self.assertEqual(S.installed(self.root), ["standard-effects"])
 
 

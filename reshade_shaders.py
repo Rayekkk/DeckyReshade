@@ -11,17 +11,18 @@ removed without taking files another package still needs.
 """
 
 import configparser
-import json
 import os
 import re
 import shutil
 import urllib.parse
 import zipfile
 
-import reshade_net as net
+import dk_fs
+import dk_net
 
 LIST_URL = "https://raw.githubusercontent.com/crosire/reshade-shaders/list/EffectPackages.ini"
-ARCHIVE_HOSTS = {"github.com", "codeload.github.com"}
+LIST_HOSTS = {"raw.githubusercontent.com"}
+ARCHIVE_HOSTS = {"github.com", "codeload.github.com"}  # github.com/<repo>/archive/... redirects to codeload
 MAX_LIST = 1 << 20
 MAX_ARCHIVE = 256 << 20
 MAX_EXPANDED = 1 << 30
@@ -78,10 +79,10 @@ def parse_list(text):
     return packages
 
 
-def fetch_list():
+def fetch_list(cancel=None):
     try:
-        return parse_list(net.get(LIST_URL, MAX_LIST).decode("utf-8", "replace"))
-    except net.NetError as e:
+        return parse_list(dk_net.get(LIST_URL, MAX_LIST, hosts=LIST_HOSTS, cancel=cancel).decode("utf-8", "replace"))
+    except dk_net.NetError as e:
         raise ShaderError(f"Could not load the shader package list: {e}.") from e
 
 
@@ -108,27 +109,29 @@ def destination(member, package):
     return "/".join([kind.capitalize()] + ([sub] if sub else []) + rest)
 
 
+def _check_index(index):
+    """package id -> the files it brought (dk_fs's validate hook)."""
+    dk_fs.require_object(index)
+    if not all(isinstance(v, list) and all(isinstance(f, str) for f in v) for v in index.values()):
+        raise ValueError("not a shader index")
+
+
 def _load_index(root):
     try:
-        with open(os.path.join(root, "index.json"), encoding="utf-8") as f:
-            index = json.load(f)
-        return index if isinstance(index, dict) else {}
-    except (OSError, ValueError):
+        return dk_fs.read_json(os.path.join(root, "index.json"), {}, validate=_check_index)
+    except OSError:  # unreadable: no packages listed; their files stay until it can be read again
         return {}
 
 
 def _save_index(root, index):
-    tmp = os.path.join(root, "index.json.tmp")
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(index, f, indent=1)
-    os.replace(tmp, os.path.join(root, "index.json"))
+    dk_fs.write_json(os.path.join(root, "index.json"), index)
 
 
 def installed(root):
     return sorted(_load_index(root))
 
 
-def install(root, package):
+def install(root, package, cancel=None):
     """Download one package and put its files into root/Shaders and root/Textures; returns how many files.
 
     The archive is checked and unpacked to a temp folder first, so a failed download changes nothing.
@@ -139,8 +142,9 @@ def install(root, package):
     archive = os.path.join(part, "package.zip")
     try:
         try:
-            net.download(package["url"], archive, MAX_ARCHIVE)
-        except net.NetError as e:
+            dk_net.download(package["url"], archive, MAX_ARCHIVE, hosts=ARCHIVE_HOSTS, deadline=dk_net.MAX_DEADLINE,
+                            cancel=cancel)
+        except dk_net.NetError as e:
             raise ShaderError(f"{package['name']} could not be downloaded: {e}.") from e
         files, total = [], 0
         try:
@@ -189,7 +193,7 @@ def _drop(root, files, index):
         try:
             os.remove(os.path.join(root, *rel.split("/")))
         except OSError:
-            pass
+            pass  # already gone, or left for the next update to overwrite
 
 
 def remove(root, pid):

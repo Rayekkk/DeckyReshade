@@ -8,10 +8,11 @@ ReShade is not published on GitHub; its homepage links the current installer as
 program with a ZIP archive appended, which Python's zipfile opens as is (no 7-Zip), and holds ReShade32.dll and
 ReShade64.dll. Each DLL is accepted only when its PE header says it is the 32- or 64-bit build its name claims.
 
-KNOWN lists earlier releases the user can pick (one per minor version, e.g. 6.5.1 for DXVK HDR games), each with
-the SHA-256 of both installers, checked on download. When the homepage cannot be read or no longer shows the link,
-the newest KNOWN version is installed instead. A failed check therefore never breaks anything: games keep the ReShade
-they have.
+KNOWN lists the releases this plugin installs (one per minor version, e.g. 6.5.1 for DXVK HDR games), each with the
+SHA-256 of both installers, checked on download. reshade.me publishes no checksums, so only these versions are ever
+installed: "latest" means the newest of them (FALLBACK). The homepage still tells when ReShade has a newer release,
+which the panel shows; it becomes installable once its sums are added here and the plugin is released. A failed check
+never breaks anything: games keep the ReShade they have.
 
 Proton's own d3dcompiler_47 cannot compile ReShade's effects, so Microsoft's is used, from Mozilla's fxc2 repository at
 a fixed commit and checked against its SHA-256. The AutoHDR add-on (EndlesslyFlowering, MIT) comes from its GitHub
@@ -23,7 +24,9 @@ import re
 import shutil
 import zipfile
 
-import reshade_net as net
+import dk_fs
+import dk_net
+from dk_update import ASSET_HOSTS as GITHUB_DOWNLOADS
 from reshade_games import MACHINE_BITS
 
 HOME_URL = "https://reshade.me/"
@@ -61,6 +64,8 @@ DLLS = {64: "ReShade64.dll", 32: "ReShade32.dll"}
 MAX_PAGE = 2 << 20
 MAX_SETUP = 64 << 20
 MAX_DLL = 32 << 20
+RESHADE_HOSTS = {"reshade.me"}
+COMPILER_HOSTS = {"raw.githubusercontent.com"}
 _LINK = re.compile(r"/downloads/ReShade_Setup_(\d{1,3}\.\d{1,3}\.\d{1,3})(?:_Addon)?\.exe")
 
 
@@ -73,14 +78,14 @@ def version_tuple(version):
 
 
 VERSIONS = sorted(KNOWN, key=version_tuple, reverse=True)
-FALLBACK = VERSIONS[0]  # installed when reshade.me cannot tell the latest
+FALLBACK = VERSIONS[0]  # the newest version with known sums: what "latest" installs
 
 
-def latest_version():
+def latest_version(cancel=None):
     """The newest version reshade.me links; raises ReleaseError when it cannot be told."""
     try:
-        page = net.get(HOME_URL, MAX_PAGE).decode("utf-8", "replace")
-    except net.NetError as e:
+        page = dk_net.get(HOME_URL, MAX_PAGE, hosts=RESHADE_HOSTS, cancel=cancel).decode("utf-8", "replace")
+    except dk_net.NetError as e:
         raise ReleaseError(f"Could not check for a new ReShade: {e}.") from e
     versions = _LINK.findall(page)
     if not versions:
@@ -127,21 +132,26 @@ def extract(setup, folder):
         raise ReleaseError("The download is not a ReShade installer this plugin can read.") from e
 
 
-def fetch(root, version, addon):
-    """Download one ReShade build into root/<variant>/ unless it is there already; returns that folder."""
+def fetch(root, version, addon, cancel=None):
+    """Download one ReShade build into root/<variant>/ unless it is there already; returns that folder. Only versions
+    in KNOWN: anything else could not be checked."""
     folder = os.path.join(root, variant(version, addon))
     if is_complete(folder):
         return folder
+    if version not in KNOWN:
+        raise ReleaseError(f"ReShade {version} has no known SHA-256 in this DeckyReshade version, so it is not "
+                           "installed; it comes with a plugin update.")
     part = folder + ".part"
     shutil.rmtree(part, ignore_errors=True)
     os.makedirs(part)
     try:
         setup = os.path.join(part, "setup.exe")
         url = SETUP_URL.format(version=version, suffix="_Addon" if addon else "")
-        pinned = KNOWN[version][addon] if version in KNOWN else None
+        pinned = KNOWN[version][addon]
         try:
-            net.download(url, setup, MAX_SETUP, sha256=pinned)
-        except net.NetError as e:
+            dk_net.download(url, setup, MAX_SETUP, pinned, hosts=RESHADE_HOSTS, deadline=dk_net.MAX_DEADLINE,
+                            cancel=cancel)
+        except dk_net.NetError as e:
             raise ReleaseError(f"ReShade {version} could not be downloaded: {e}.") from e
         extract(setup, part)
         os.remove(setup)
@@ -158,33 +168,33 @@ def compiler_path(root, bits):
     return os.path.join(root, f"d3dcompiler_47.{bits}.dll")
 
 
-def _fetch_pinned(files, path_for, what):
+def _fetch_pinned(files, path_for, what, hosts, cancel):
     """Download files ({bits: {url, size, sha256}}) unless a matching copy is there; only verified files are kept."""
     for bits, known in files.items():
         path = path_for(bits)
         try:
-            if os.path.getsize(path) == known["size"] and net.sha256_file(path) == known["sha256"]:
+            if os.path.getsize(path) == known["size"] and dk_fs.sha256_file(path) == known["sha256"]:
                 continue
         except OSError:
-            pass
+            pass  # no usable copy yet: download it
         try:
-            net.download(known["url"], path, known["size"], sha256=known["sha256"])
-        except net.NetError as e:
+            dk_net.download(known["url"], path, known["size"], known["sha256"], hosts=hosts, cancel=cancel)
+        except dk_net.NetError as e:
             raise ReleaseError(f"{what} could not be downloaded: {e}.") from e
 
 
-def fetch_compilers(root):
+def fetch_compilers(root, cancel=None):
     """Microsoft's d3dcompiler_47 for both bitnesses."""
-    _fetch_pinned(COMPILERS, lambda bits: compiler_path(root, bits), "The shader compiler")
+    _fetch_pinned(COMPILERS, lambda bits: compiler_path(root, bits), "The shader compiler", COMPILER_HOSTS, cancel)
 
 
 def autohdr_path(root, bits):
     return os.path.join(root, f"AutoHDR.addon{bits}")
 
 
-def fetch_autohdr(root):
+def fetch_autohdr(root, cancel=None):
     """The AutoHDR add-on for both bitnesses."""
-    _fetch_pinned(AUTOHDR, lambda bits: autohdr_path(root, bits), "The AutoHDR add-on")
+    _fetch_pinned(AUTOHDR, lambda bits: autohdr_path(root, bits), "The AutoHDR add-on", GITHUB_DOWNLOADS, cancel)
 
 
 def prune(root, keep):

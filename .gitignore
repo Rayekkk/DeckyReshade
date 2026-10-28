@@ -27,3 +27,6 @@ tests/_settings/
 .DS_Store
 Thumbs.db
 
+
+# Release zips and their .sha256 (scripts/package.mjs)
+artifacts/
