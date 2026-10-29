@@ -330,7 +330,7 @@ def enable(manifest, game, exe, api, bits, sources, shaders_dir, launch_options,
             # recorded like a DLL: turning the feature off removes it again, unless the user's edits made it theirs
             entry["files"][PRESET] = sha256_file(preset_path)
     except OSError as e:
-        raise InstallError(f"could not write to the game folder: {e}") from e
+        raise InstallError(f"could not write to the game folder ({e.strerror or type(e).__name__})") from e
 
     if launch:
         entry["launch_applied"] = new_options

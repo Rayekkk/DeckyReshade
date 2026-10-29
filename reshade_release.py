@@ -126,8 +126,8 @@ def extract(setup, folder):
                 data = archive.read(name)
                 if _machine(data) != bits:
                     raise ReleaseError(f"{name} in the installer is not a {bits}-bit Windows DLL.")
-                with open(os.path.join(folder, name), "wb") as f:
-                    f.write(data)
+                # synced: is_complete only sees that the file exists, so a DLL emptied by a power cut would stay
+                dk_fs.write_atomic(os.path.join(folder, name), data)
     except (zipfile.BadZipFile, KeyError) as e:
         raise ReleaseError("The download is not a ReShade installer this plugin can read.") from e
 
@@ -158,7 +158,7 @@ def fetch(root, version, addon, cancel=None):
         shutil.rmtree(folder, ignore_errors=True)
         os.replace(part, folder)
     except OSError as e:
-        raise ReleaseError(f"ReShade could not be saved: {e}.") from e
+        raise ReleaseError(f"ReShade could not be saved ({e.strerror or type(e).__name__}).") from e
     finally:
         shutil.rmtree(part, ignore_errors=True)
     return folder

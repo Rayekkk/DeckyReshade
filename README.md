@@ -214,7 +214,7 @@ row gets a notification. Nothing is installed system-wide and Proton is not modi
 <details>
 <summary><b>Build, test and package from source</b></summary>
 
-Requires Node.js 24 and Python 3.11 or newer.
+Requires Node.js 24 and Python 3.14 (the version Decky Loader 3.3.1 and SteamOS use).
 
 ```bash
 npm ci --ignore-scripts --no-audit --no-fund

@@ -35,7 +35,8 @@ First version.
 - **Panel:** a change asked for while a download is running is answered with a message instead of being ignored.
 - **Games set up:** if the plugin's list of games set up is damaged, it is restored from its last good copy; when that
   is impossible, the panel says so and no game is changed, so ReShade's files are never left behind unrecorded.
-- **Errors:** an unexpected error shows its kind and points to the Decky log, without file paths.
+- **Errors:** messages in the panel carry no file paths: a file that cannot be written says why (for example
+  "Permission denied"), and an unexpected error shows its kind and points to the Decky log.
 - **Settings:** a setting that cannot be saved (for example on a full disk) stays as it was and the panel says why.
 
 ### Security

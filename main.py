@@ -114,6 +114,7 @@ class Plugin:
         try:
             # what every RPC and _unload rely on comes first, before anything that can fail
             self.lock = asyncio.Lock()
+            self.settings_lock = asyncio.Lock()  # settings change during jobs too, so not under self.lock
             self.job = {"task": "", "error": ""}
             self.stopping = threading.Event()  # set by _unload: downloads in flight stop, no job starts
             self.cancel = self.stopping.is_set
@@ -229,13 +230,14 @@ class Plugin:
 
     @rpc
     async def get_state(self) -> dict:
-        return dk_rpc.ok(self._state())
+        return dk_rpc.ok(await asyncio.to_thread(self._state))  # polled during jobs: its file reads stay off the loop
 
-    def _save_settings(self, **changes):
+    async def _save_settings(self, **changes):
         """The settings with changes, written first: memory changes only once the file has them."""
-        settings = {**self.settings, **changes}
-        dk_fs.write_json(self.settings_path, settings)
-        self.settings = settings
+        async with self.settings_lock:  # each write starts from what the one before it saved
+            settings = {**self.settings, **changes}
+            await asyncio.to_thread(dk_fs.write_json, self.settings_path, settings)
+            self.settings = settings
         decky.logger.info(f"settings: {changes}")
 
     def _save_release(self):
@@ -250,7 +252,7 @@ class Plugin:
         if key not in ("addon", "auto_launch_options") or not isinstance(value, bool):
             return dk_rpc.fail("Unknown setting.", self._state())
         try:
-            self._save_settings(**{key: value})
+            await self._save_settings(**{key: value})
         except OSError as e:
             return self._settings_failed(e)
         if key == "addon" and self._installed() and value != self.release.get("addon", False):
@@ -263,7 +265,7 @@ class Plugin:
         if version != "latest" and version not in reshade_release.VERSIONS:
             return dk_rpc.fail("That ReShade version is not offered.", self._state())
         try:
-            self._save_settings(version=version)
+            await self._save_settings(version=version)
         except OSError as e:
             return self._settings_failed(e)
         if not self._installed():
@@ -400,7 +402,8 @@ class Plugin:
     async def setup(self, addon: bool, version: str, autohdr: bool) -> dict:
         """The first-run wizard's choices: build, version, AutoHDR."""
         try:
-            self._save_settings(addon=bool(addon), version=version if version in reshade_release.VERSIONS else "latest")
+            await self._save_settings(addon=bool(addon),
+                                      version=version if version in reshade_release.VERSIONS else "latest")
         except OSError as e:
             return self._settings_failed(e)
         decky.logger.info(f"setup: addon={addon} version={self.settings['version']} autohdr={autohdr}")
@@ -498,7 +501,7 @@ class Plugin:
             renodx={"installed": installed, "auto": auto["name"] if auto else "",
                     "mod": {**mod, "files": sorted(mod["files"]),
                             "host": reshade_renodx.host(mod["files"].get(str(chosen["bits"])))} if mod else None},
-            log=reshade_diag.reshade_log(folder))
+            log=await asyncio.to_thread(reshade_diag.reshade_log, folder))
 
     @rpc
     async def enable_game(self, appid: int, exe: str, api: str, autohdr: bool, renodx: str,
@@ -531,10 +534,10 @@ class Plugin:
         path = os.path.realpath(os.path.join(install_dir, exe))
         if not path.startswith(install_dir + os.sep) or not os.path.isfile(path):
             return dk_rpc.fail("That executable is not in the game's folder any more; close and reopen this menu.")
-        info = reshade_games.pe_info(path)
+        info = await asyncio.to_thread(reshade_games.pe_info, path)
         if not info:
             return dk_rpc.fail("That file is not a Windows executable.")
-        options = self._current_options(game, launch_options)
+        options = await asyncio.to_thread(self._current_options, game, launch_options)
         # A game Decky Launch Options runs gets its ReShade option there; we only put the files in place.
         dlo = dlo_installed or reshade_install.dlo_managed(options)
         decky.logger.info(f"enable {appid} '{game['name']}': {exe} {info['bits']}-bit api={api} autohdr={autohdr} "
@@ -577,7 +580,7 @@ class Plugin:
         if self.manifest.problem:  # what was put where is unknown: nothing is removed blindly
             return dk_rpc.fail(self.manifest.problem)
         game = self._game(appid)
-        options = self._current_options(game, launch_options) if game else launch_options
+        options = await asyncio.to_thread(self._current_options, game, launch_options) if game else launch_options
         async with self.lock:
             try:
                 result = await asyncio.to_thread(reshade_install.disable, self.manifest, appid, options)
@@ -585,7 +588,7 @@ class Plugin:
                 decky.logger.exception(f"disable {appid} failed")
                 return dk_rpc.fail(_message(e))
         decky.logger.info(f"disable {appid}: kept={result['kept']} options {options!r} -> {result['launch_options']!r}")
-        left = reshade_install.dlo_leftover(_dlo_original(appid))
+        left = reshade_install.dlo_leftover(await asyncio.to_thread(_dlo_original, appid))
         if left:
             decky.logger.warning(f"disable {appid}: Decky Launch Options still stores {left!r}")
             result["dlo_leftover"] = left
@@ -607,8 +610,8 @@ class Plugin:
         entry, started = self.manifest.entries.get(appid), self.sessions.pop(appid, None)
         if not entry or started is None:
             return dk_rpc.ok(managed=bool(entry))
-        loaded = reshade_install.loaded_since(entry, started)
-        summary = reshade_diag.reshade_log(entry["target_dir"])
+        loaded = await asyncio.to_thread(reshade_install.loaded_since, entry, started)
+        summary = await asyncio.to_thread(reshade_diag.reshade_log, entry["target_dir"])
         decky.logger.info(f"session ended: {appid} loaded={loaded} log errors={summary['errors']}")
         async with self.lock:
             entry["missed"] = 0 if loaded else entry.get("missed", 0) + 1
@@ -638,8 +641,9 @@ class Plugin:
             install_dir = os.path.realpath(game["install_dir"])
             path = os.path.realpath(os.path.join(install_dir, exe))
             folder = os.path.dirname(path) if path.startswith(install_dir + os.sep) else ""
-        return dk_rpc.ok(plugin=reshade_diag.tail(reshade_diag.plugin_log_path(decky), 300),
-                         reshade=reshade_diag.tail(os.path.join(folder, reshade_install.LOG), 200) if folder else "")
+        plugin = await asyncio.to_thread(reshade_diag.tail, reshade_diag.plugin_log_path(decky), 300)
+        game_log = await asyncio.to_thread(reshade_diag.tail, os.path.join(folder, reshade_install.LOG), 200)             if folder else ""
+        return dk_rpc.ok(plugin=plugin, reshade=game_log)
 
     def _report(self):
         header = [("Plugin", VERSION), ("System", reshade_diag.os_release()), ("Settings", self.settings),
@@ -689,7 +693,8 @@ class Plugin:
         if not hasattr(self, "stopping"):
             return  # _main never ran
         self.stopping.set()
-        self.updates.close()
+        if hasattr(self, "updates"):  # missing when _main failed before creating it
+            self.updates.close()
         for task in list(self.tasks):
             task.cancel()
         decky.logger.info("unloaded")
@@ -698,4 +703,5 @@ class Plugin:
         # Decky runs this on every plugin *update* too (an update is uninstall + install), so tearing games down here
         # would switch ReShade off everywhere on each update. "Turn off ReShade in all games" in the panel is the
         # cleanup before a real uninstall.
-        decky.logger.info(f"uninstall/update: leaving {len(self.manifest.entries)} game(s) set up")
+        manifest = getattr(self, "manifest", None)  # missing when _main failed before reading it
+        decky.logger.info(f"uninstall/update: leaving {len(manifest.entries) if manifest else 0} game(s) set up")

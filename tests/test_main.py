@@ -451,6 +451,24 @@ class Contract(Base):
         self.run_async(flow())
 
 
+class WriteErrors(Base):
+    def test_a_failed_write_tells_why_without_the_path(self):
+        async def flow():
+            p = await self.start(setup=True)
+            denied = OSError(13, "Permission denied", "/home/someone/file")
+            with mock.patch.object(main.reshade_install, "_copy", side_effect=denied):
+                game = await p.enable_game(70, "Game.exe", "dxgi", False, "", "")
+            with mock.patch.object(reshade_shaders, "_save_index", side_effect=denied):
+                shader = await p.set_package(p.packages[0]["id"], True)
+            with mock.patch.object(reshade_release, "extract", side_effect=denied):
+                release = await p.set_version("6.5.1")
+            for r in (game, shader, release):
+                self.assertEqual(r["ok"], False)
+                self.assertIn("Permission denied", r["error"])
+                self.assertNotIn("someone", r["error"])
+        self.run_async(flow())
+
+
 class Stopping(Base):
     def test_unload_cancels_background_work_and_downloads(self):
         async def flow():
@@ -484,6 +502,17 @@ class Stopping(Base):
             await p.enable_game(70, "Game.exe", "dxgi", False, "", "")
             await p._uninstall()
             self.assertTrue(os.path.exists(os.path.join(self.game_dir, "dxgi.dll")))
+        self.run_async(flow())
+
+    def test_stops_after_a_failed_start(self):
+        async def flow():
+            p = main.Plugin()
+            with mock.patch.object(main.dk_update, "Updates", side_effect=OSError("no home")):
+                with self.assertRaises(OSError):
+                    await p._main()
+            await p._unload()
+            await p._uninstall()
+            self.assertTrue(p.stopping.is_set())
         self.run_async(flow())
 
 
