@@ -2,13 +2,14 @@
 // Copyright (c) 2026 Rayekkk
 
 // One game: ReShade on or off, AutoHDR, a RenoDX mod, the executable and graphics API, ReShade's log.
-import { ButtonItem, DropdownItem, Field, PanelSection, PanelSectionRow, Spinner, ToggleField } from "@decky/ui";
+import { DropdownItem, Field, PanelSection, PanelSectionRow, ToggleField } from "@decky/ui";
 import { FC, ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import {
   API_LABEL, APIS, DXGI_APIS, GameInfo, getGame, getLogs, getRenodxMods, LogSummary, RENODX_STATUS, renodxBadge, State,
 } from "./api";
 import { settle } from "./result";
-import { ago, applyGame, dloInstalled, errorBox, muted, notify, okText, showText, warnText } from "./shared";
+import { ago, applyGame, dloInstalled, errorStyle, muted, NAME, okText, showText, warnText } from "./shared";
+import { ActionButton, notify, statusPlaceholder } from "./ui";
 
 const ANTICHEAT_WARNING = "Anti-cheat detected: ReShade in online games can get you kicked or banned. " +
   "Turning it on is at your own risk.";
@@ -31,8 +32,10 @@ const LastRun: FC<{ log?: LogSummary; enabled: boolean }> = ({ log, enabled }) =
 // The installable RenoDX mods, for picking one by hand; loaded once per panel lifetime.
 let renodxMods: { name: string; status: string }[] | null = null;
 
-export const GamePage: FC<{ game: State["games"][number]; state: State; working: boolean; setBusy: (b: boolean) => void; refresh: () => void }> =
-  ({ game, state, working, setBusy, refresh }) => {
+// `fail` shows a refused change at the top of the page until the next action (UI.md §5).
+export const GamePage: FC<{ game: State["games"][number]; state: State; working: boolean; setBusy: (b: boolean) => void;
+  refresh: () => void; fail: (why: string) => void }> =
+  ({ game, state, working, setBusy, refresh, fail }) => {
     const [info, setInfo] = useState<GameInfo | null>(null);
     const [api, setApi] = useState<string | null>(null); // null: the detected one
     const [renodx, setRenodx] = useState(""); // the mod chosen for this game, by name
@@ -59,9 +62,13 @@ export const GamePage: FC<{ game: State["games"][number]; state: State; working:
         settle(getRenodxMods()).then(r => { if (r.mods) { renodxMods = r.mods; setMods(r.mods); } });
     }, [state.renodx.count]);
 
-    if (loading && !info) return <PanelSection><PanelSectionRow><Spinner /></PanelSectionRow></PanelSection>;
-    if (!info) return null;
-    if (!info.ok) return <PanelSection><PanelSectionRow><div style={errorBox}>{info.error}</div></PanelSectionRow></PanelSection>;
+    // A spinner while loading; a failed read says why and offers Try again, a game that cannot be supported only
+    // says why (UI.md §4).
+    if (info?.unsupported) return <PanelSection>
+      <PanelSectionRow><Field focusable label="Game not supported" description={info.error} /></PanelSectionRow>
+    </PanelSection>;
+    if (!info?.ok) return statusPlaceholder({ label: "Game details unavailable",
+      error: loading || !info ? "" : info.error ?? "Failed", onRetry: () => void load() });
 
     const detected = info.detected_api ?? "dxgi";
     const effective = api ?? detected;
@@ -80,7 +87,8 @@ export const GamePage: FC<{ game: State["games"][number]; state: State; working:
       // the standard build cannot run RenoDX: a change made without the add-on build takes it out
       const reno = addon ? change.renodx ?? info.renodx?.installed ?? "" : "";
       setBusy(true);
-      await applyGame(game.appid, game.name, game.nonsteam, on, exe, chosen, hdr, reno);
+      fail("");
+      fail(await applyGame(game.appid, game.name, game.nonsteam, on, exe, chosen, hdr, reno));
       await load(exe);
       setBusy(false);
       refresh();
@@ -89,7 +97,7 @@ export const GamePage: FC<{ game: State["games"][number]; state: State; working:
     const showLog = async () => {
       const l = await settle(getLogs(game.appid, info.exe ?? ""));
       if (l.ok) showText(`ReShade log · ${game.name}`, l.reshade ?? "");
-      else notify("DeckyReshade", l.error ?? "The log could not be read.");
+      else notify(NAME, l.error ?? "The log could not be read.");
     };
 
     const row = (child: ReactNode) => <PanelSectionRow>{child}</PanelSectionRow>;
@@ -101,7 +109,7 @@ export const GamePage: FC<{ game: State["games"][number]; state: State; working:
             <ToggleField label="ReShade in this game" checked={!!info.enabled} disabled={busyHere || (!info.enabled && !supported)}
               description={<LastRun log={info.log} enabled={!!info.enabled} />} onChange={on => apply(on)} />,
           )}
-          {info.anticheat && row(<div style={errorBox}>{ANTICHEAT_WARNING}</div>)}
+          {info.anticheat && row(<div style={errorStyle}>{ANTICHEAT_WARNING}</div>)}
           {!info.enabled && row(<div style={muted}>Then restart the game and press Home to open ReShade.</div>)}
           {dloInstalled() && row(<div style={muted}>Launch options are up to Decky Launch Options: in its ReShade tab, pick this game's graphics API (and ReShade HDR for AutoHDR or RenoDX).</div>)}
         </PanelSection>
@@ -117,7 +125,7 @@ export const GamePage: FC<{ game: State["games"][number]; state: State; working:
           )}
           {row(
             <Field label="RenoDX mod" description={mod ? <>
-              <div style={mod.status === "working" ? okText : warnText}>{RENODX_STATUS[mod.status] ?? `⚠️ ${mod.note}`}</div>
+              <div style={mod.status === "working" ? okText : warnText}>{RENODX_STATUS[mod.status] ?? (mod.note || "See the mod's page for its status.")}</div>
               <div>{mod.name} · by {mod.maintainer}{mod.status !== "other" && mod.note ? ` · ${mod.note}` : ""}</div>
             </> : state.renodx.count ? "No RenoDX mod in the list matches this game; you can pick one below."
               : "The RenoDX list is not loaded yet (ReShade version page → Refresh RenoDX list)."} />,
@@ -134,9 +142,9 @@ export const GamePage: FC<{ game: State["games"][number]; state: State; working:
               onChange={on => apply(on || !!info.enabled, { renodx: on ? renodx : "" })} />,
           )}
           {renodxOn && row(
-            <ButtonItem layout="below" disabled={busyHere} onClick={() => apply(true)} description="Downloads the newest snapshot of the mod again.">
+            <ActionButton disabled={busyHere} onClick={() => apply(true)} description="Downloads the newest snapshot of the mod again.">
               Update RenoDX mod
-            </ButtonItem>,
+            </ActionButton>,
           )}
           {mods && mods.length > 0 && row(
             <DropdownItem layout="below" childrenContainerWidth="max" label="Another RenoDX mod" disabled={busyHere} selectedOption={renodx || null}
@@ -167,9 +175,9 @@ export const GamePage: FC<{ game: State["games"][number]; state: State; working:
               }} />,
           )}
           {row(
-            <ButtonItem layout="below" disabled={!info.log?.found} onClick={showLog}>
+            <ActionButton disabled={!info.log?.found} onClick={showLog}>
               Show ReShade log
-            </ButtonItem>,
+            </ActionButton>,
           )}
         </PanelSection>
       </>

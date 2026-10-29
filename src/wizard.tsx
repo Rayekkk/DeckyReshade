@@ -2,13 +2,14 @@
 // Copyright (c) 2026 Rayekkk
 
 // The first-run wizard: build, version, AutoHDR, one download, then how to use it.
-import { ButtonItem, DropdownItem, Field, PanelSection, PanelSectionRow, Spinner, ToggleField } from "@decky/ui";
+import { DropdownItem, PanelSection, PanelSectionRow, Spinner, ToggleField } from "@decky/ui";
 import { FC, useEffect, useState } from "react";
 import { setup, State } from "./api";
 import { Result } from "./result";
-import { errorBox, versionLabel } from "./shared";
+import { errorStyle, versionLabel } from "./shared";
+import { ActionButton, infoRow } from "./ui";
 
-export type Run = (call: () => Promise<Result<State>>) => Promise<void>;
+export type Run = (call: () => Promise<Result<State>>) => Promise<Result<State>>;
 
 // Survives the QAM remounting the panel.
 let wizard = { step: 0, addon: true, version: "latest", autohdr: true };
@@ -38,18 +39,16 @@ export const Wizard: FC<{ state: State; busy: boolean; run: Run; onDone: () => v
 
   const title = (n: number, text: string) => `Setup ${n}/${steps} · ${text}`;
   const back = (to: number) => (
-    <PanelSectionRow><ButtonItem layout="below" onClick={() => set({ step: to })}>Back</ButtonItem></PanelSectionRow>
+    <PanelSectionRow><ActionButton onClick={() => set({ step: to })}>Back</ActionButton></PanelSectionRow>
   );
 
   if (w.step === 0)
     return (
       <PanelSection title="Welcome to DeckyReshade">
-        <PanelSectionRow>
-          <Field label="ReShade for your games, from Gaming Mode" description={
-            "Setup takes a minute: pick a ReShade build and version, then everything is downloaded (about 15 MB). " +
-            "No game is changed until you turn ReShade on for it."} />
-        </PanelSectionRow>
-        <PanelSectionRow><ButtonItem layout="below" onClick={() => set({ step: 1 })}>Start setup</ButtonItem></PanelSectionRow>
+        {infoRow("ReShade for your games, from Gaming Mode",
+          "Setup takes a minute: pick a ReShade build and version, then everything is downloaded (about 15 MB). " +
+          "No game is changed until you turn ReShade on for it.")}
+        <PanelSectionRow><ActionButton onClick={() => set({ step: 1 })}>Start setup</ActionButton></PanelSectionRow>
       </PanelSection>
     );
 
@@ -57,16 +56,16 @@ export const Wizard: FC<{ state: State; busy: boolean; run: Run; onDone: () => v
     return (
       <PanelSection title={title(1, "ReShade build")}>
         <PanelSectionRow>
-          <ButtonItem layout="below" onClick={() => set({ addon: true, step: 2 })}
+          <ActionButton onClick={() => set({ addon: true, step: 2 })}
             description="Recommended. Needed for AutoHDR and depth add-ons (3D, SBS). ReShade itself turns this build off in online multiplayer games.">
             {w.addon ? "✓ " : ""}With add-ons
-          </ButtonItem>
+          </ActionButton>
         </PanelSectionRow>
         <PanelSectionRow>
-          <ButtonItem layout="below" onClick={() => set({ addon: false, autohdr: false, step: 2 })}
+          <ActionButton onClick={() => set({ addon: false, autohdr: false, step: 2 })}
             description="For online games. Effects work, add-ons such as AutoHDR do not.">
             {!w.addon ? "✓ " : ""}Standard
-          </ButtonItem>
+          </ActionButton>
         </PanelSectionRow>
         {back(0)}
       </PanelSection>
@@ -81,7 +80,7 @@ export const Wizard: FC<{ state: State; busy: boolean; run: Run; onDone: () => v
             rgOptions={["latest", ...reshade.versions].map(v => ({ data: v, label: versionLabel(v, reshade.versions[0]) }))}
             onChange={o => set({ version: o.data })} />
         </PanelSectionRow>
-        <PanelSectionRow><ButtonItem layout="below" onClick={() => set({ step: w.addon ? 3 : steps })}>Next</ButtonItem></PanelSectionRow>
+        <PanelSectionRow><ActionButton onClick={() => set({ step: w.addon ? 3 : steps })}>Next</ActionButton></PanelSectionRow>
         {back(1)}
       </PanelSection>
     );
@@ -93,7 +92,7 @@ export const Wizard: FC<{ state: State; busy: boolean; run: Run; onDone: () => v
           <ToggleField label="Download AutoHDR" checked={w.autohdr} onChange={on => set({ autohdr: on })}
             description="Turns SDR games into HDR on HDR screens (Steam Deck OLED and other OLED handhelds). Needs HDR on in Steam's display settings and a DirectX 10/11/12 game. You turn it on per game." />
         </PanelSectionRow>
-        <PanelSectionRow><ButtonItem layout="below" onClick={() => set({ step: steps })}>Next</ButtonItem></PanelSectionRow>
+        <PanelSectionRow><ActionButton onClick={() => set({ step: steps })}>Next</ActionButton></PanelSectionRow>
         {back(2)}
       </PanelSection>
     );
@@ -101,15 +100,13 @@ export const Wizard: FC<{ state: State; busy: boolean; run: Run; onDone: () => v
   if (w.step === 10)
     return (
       <PanelSection title="ReShade is ready">
-        <PanelSectionRow>
-          <Field label="How to use it" description={<ol style={{ margin: 0, paddingLeft: "18px" }}>
+        {infoRow("How to use it", <ol style={{ margin: 0, paddingLeft: "18px" }}>
             <li>Start a game and open this menu: the game is picked for you.</li>
             <li>Turn on <b>ReShade in this game</b>{w.autohdr ? " (and AutoHDR, if you want it)" : ""}.</li>
             <li>Restart the game and press <b>Home</b> to open ReShade. No keyboard? Map Home to a back button in the game's controller layout.</li>
             <li>If ReShade does not appear, the game's page shows why and lets you pick another executable or API.</li>
-          </ol>} />
-        </PanelSectionRow>
-        <PanelSectionRow><ButtonItem layout="below" onClick={() => { set({ step: 11 }); onDone(); }}>Done</ButtonItem></PanelSectionRow>
+          </ol>)}
+        <PanelSectionRow><ActionButton onClick={() => { set({ step: 11 }); onDone(); }}>Done</ActionButton></PanelSectionRow>
       </PanelSection>
     );
 
@@ -117,21 +114,19 @@ export const Wizard: FC<{ state: State; busy: boolean; run: Run; onDone: () => v
   const installing = w.step === 9 || busy || !!job.task;
   return (
     <PanelSection title={title(steps, "Download")}>
-      <PanelSectionRow>
-        <Field label="Your choices" description={<>
+      {infoRow("Your choices", <>
           <div>Build: {w.addon ? "with add-ons" : "standard"}</div>
           <div>Version: {versionLabel(w.version, reshade.versions[0])}</div>
           {w.addon && <div>AutoHDR: {w.autohdr ? "yes" : "no"}</div>}
           <div>Shaders: standard effects and SweetFX (more can be added later)</div>
-        </>} />
-      </PanelSectionRow>
-      {job.error && !installing && <PanelSectionRow><div style={errorBox}>{job.error}</div></PanelSectionRow>}
+        </>)}
+      {job.error && !installing && infoRow("Could not complete", <div role="alert" style={errorStyle}>{job.error}</div>)}
       <PanelSectionRow>
-        <ButtonItem layout="below" disabled={installing}
+        <ActionButton disabled={installing}
           onClick={() => { set({ step: 9 }); run(() => setup(w.addon, w.version, w.autohdr && w.addon)); }}>
           {installing ? <span>{job.task || "Starting…"} <Spinner style={{ width: "16px", verticalAlign: "middle" }} /></span>
             : job.error ? "Try again" : "Download and set up"}
-        </ButtonItem>
+        </ActionButton>
       </PanelSectionRow>
       {!installing && back(w.addon ? 3 : 2)}
     </PanelSection>

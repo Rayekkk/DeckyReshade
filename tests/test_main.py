@@ -184,6 +184,16 @@ class Games(Base):
             self.assertFalse((await p.get_game(12345))["ok"])
         self.run_async(flow())
 
+    def test_a_game_without_a_windows_executable_is_unsupported_not_a_failed_read(self):
+        async def flow():
+            p = await self.start(setup=True)
+            os.remove(os.path.join(self.game_dir, "Game.exe"))
+            r = await p.get_game(70)
+            self.assertEqual((r["ok"], r.get("unsupported")), (False, True))
+            self.assertIn("native Linux game", r["error"])
+            self.assertNotIn("unsupported", await p.get_game(12345), "a game not found can still be read again")
+        self.run_async(flow())
+
     def test_autohdr_and_a_new_api_set_the_game_up_again(self):
         async def flow():
             p = await self.start(setup=True)
@@ -462,10 +472,18 @@ class WriteErrors(Base):
                 shader = await p.set_package(p.packages[0]["id"], True)
             with mock.patch.object(reshade_release, "extract", side_effect=denied):
                 release = await p.set_version("6.5.1")
-            for r in (game, shader, release):
+            with mock.patch.object(main.dk_fs, "write_json", side_effect=denied):
+                setting = await p.set_setting("auto_launch_options", False)
+            with mock.patch.object(p, "_report", side_effect=denied):
+                report = await p.save_report()
+            for r in (game, shader, release, setting, report):
                 self.assertEqual(r["ok"], False)
                 self.assertIn("Permission denied", r["error"])
                 self.assertNotIn("someone", r["error"])
+            with mock.patch.object(main.reshade_install.dk_fs, "load_json", side_effect=denied):
+                problem = main.reshade_install.Manifest(p.manifest.path).problem
+            self.assertIn("Permission denied", problem)
+            self.assertNotIn("someone", problem)
         self.run_async(flow())
 
 

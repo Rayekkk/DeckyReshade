@@ -1,15 +1,16 @@
 // SPDX-License-Identifier: BSD-3-Clause
 // Copyright (c) 2026 Rayekkk
 
-// The pages behind the main list: shaders, ReShade version, troubleshooting, about (with plugin updates).
-import { ButtonItem, DropdownItem, Field, PanelSection, PanelSectionRow, Spinner, ToggleField } from "@decky/ui";
-import { FC, useEffect, useRef, useState } from "react";
+// The pages behind the main list: shaders, ReShade version, troubleshooting (About is DeckyKit's about.tsx).
+import { DropdownItem, PanelSection, PanelSectionRow, Spinner, ToggleField } from "@decky/ui";
+import { FC, useEffect, useRef } from "react";
 import {
-  checkForUpdates, checkReshade, getLogs, loadPackages, performUpdate, refreshRenodx, removeData, saveReport,
-  setPackage, setSetting, setVersion, State, updateReshade, UpdateInfo, updateShaders,
+  checkReshade, getLogs, loadPackages, refreshRenodx, removeData, saveReport, setPackage, setSetting, setVersion, State,
+  updateReshade, updateShaders,
 } from "./api";
 import { settle } from "./result";
-import { ago, confirm, dloInstalled, errorBox, exportToDlo, muted, notify, okText, showText, versionLabel, warnText } from "./shared";
+import { ago, dloInstalled, exportToDlo, NAME, okText, showText, versionLabel, warnText } from "./shared";
+import { ActionButton, confirmAction, infoRow, notify } from "./ui";
 import { resetWizard, Run } from "./wizard";
 
 export const ShadersPage: FC<{ state: State; working: boolean; run: Run }> = ({ state, working, run }) => {
@@ -24,15 +25,13 @@ export const ShadersPage: FC<{ state: State; working: boolean; run: Run }> = ({ 
   return (
     <>
       <PanelSection title="Installed">
+        {infoRow(`${installed.length} package${installed.length === 1 ? "" : "s"} installed`,
+          "Shared by every game; changes reach them at their next start. In game, ReShade lists their effects.")}
         <PanelSectionRow>
-          <Field label={`${installed.length} package${installed.length === 1 ? "" : "s"} installed`}
-            description="Shared by every game; changes reach them at their next start. In game, ReShade lists their effects." />
-        </PanelSectionRow>
-        <PanelSectionRow>
-          <ButtonItem layout="below" disabled={working || !installed.length} onClick={() => run(updateShaders)}
+          <ActionButton disabled={working || !installed.length} onClick={() => run(updateShaders)}
             description="Downloads the newest version of every installed package.">
             Update shaders
-          </ButtonItem>
+          </ActionButton>
         </PanelSectionRow>
       </PanelSection>
       <PanelSection title="Packages">
@@ -53,25 +52,23 @@ export const ReshadePage: FC<{ state: State; working: boolean; run: Run }> = ({ 
   return (
     <>
       <PanelSection title="Version">
-        <PanelSectionRow>
-          <Field label={`ReShade ${reshade.installed}`} description={<>
-            <div>{reshade.addon ? "Add-on build" : "Standard build"} · {settings.version === "latest" ? "updates automatically" : "fixed version"}</div>
-            {reshade.update_available ? <div style={warnText}>ReShade {reshade.known} is available.</div>
-              : reshade.check_error ? <div style={warnText}>{reshade.check_error}</div>
-              : reshade.newer_than_known ? <div style={warnText}>ReShade {reshade.newer_than_known} is out. It comes with the next DeckyReshade update, which adds its checksums.</div>
-              : settings.version === "latest" && reshade.latest ? <div style={okText}>Up to date</div> : null}
-          </>} />
-        </PanelSectionRow>
+        {infoRow(`ReShade ${reshade.installed}`, <>
+          <div>{reshade.addon ? "Add-on build" : "Standard build"} · {settings.version === "latest" ? "updates automatically" : "fixed version"}</div>
+          {reshade.update_available ? <div style={warnText}>ReShade {reshade.known} is available.</div>
+            : reshade.check_error ? <div style={warnText}>{reshade.check_error}</div>
+            : reshade.newer_than_known ? <div style={warnText}>ReShade {reshade.newer_than_known} is out. It comes with the next DeckyReshade update, which adds its checksums.</div>
+            : settings.version === "latest" && reshade.latest ? <div style={okText}>Up to date</div> : null}
+        </>)}
         {reshade.update_available ? (
           <PanelSectionRow>
-            <ButtonItem layout="below" disabled={working} onClick={() => run(updateReshade)}
+            <ActionButton disabled={working} onClick={() => run(updateReshade)}
               description="Every game set up here gets the new version at its next start.">
               Update to ReShade {reshade.known}
-            </ButtonItem>
+            </ActionButton>
           </PanelSectionRow>
         ) : settings.version === "latest" && (
           <PanelSectionRow>
-            <ButtonItem layout="below" disabled={working} onClick={() => run(checkReshade)}>Check for a new ReShade now</ButtonItem>
+            <ActionButton disabled={working} onClick={() => run(checkReshade)}>Check for a new ReShade now</ActionButton>
           </PanelSectionRow>
         )}
         <PanelSectionRow>
@@ -94,22 +91,22 @@ export const ReshadePage: FC<{ state: State; working: boolean; run: Run }> = ({ 
         </PanelSectionRow>
         {dloInstalled() && (
           <PanelSectionRow>
-            <ButtonItem layout="below" onClick={() => exportToDlo(state.launch_words, state.autohdr_env)}
+            <ActionButton onClick={() => exportToDlo(state.launch_words, state.autohdr_env)}
               description="Adds a ReShade tab to Decky Launch Options with one choice per game (Off or a graphics API) and the HDR variable for AutoHDR and RenoDX.">
               Add ReShade to Decky Launch Options
-            </ButtonItem>
+            </ActionButton>
           </PanelSectionRow>
         )}
       </PanelSection>
       <PanelSection title="RenoDX mod list">
         <PanelSectionRow>
-          <ButtonItem layout="below" disabled={working} onClick={() => run(refreshRenodx)}
+          <ActionButton disabled={working} onClick={() => run(refreshRenodx)}
             description={<>
               <div>{state.renodx.count ? `${state.renodx.count} RenoDX mods known${state.renodx.fetched_at ? `, list from ${ago(state.renodx.fetched_at)}` : ""}. Refreshed once a day.` : "The RenoDX mod list has not been loaded yet."}</div>
               {state.renodx.error && <div style={warnText}>{state.renodx.error}</div>}
             </>}>
             Refresh RenoDX list
-          </ButtonItem>
+          </ActionButton>
         </PanelSectionRow>
       </PanelSection>
     </>
@@ -121,135 +118,50 @@ export const TroubleshootingPage: FC<{ state: State; working: boolean; run: Run;
     const showLog = async () => {
       const l = await settle(getLogs(0, ""));
       if (l.ok) showText("DeckyReshade log", l.plugin ?? "");
-      else notify("DeckyReshade", l.error ?? "The log could not be read.");
+      else notify(NAME, l.error ?? "The log could not be read.");
     };
     const report = async () => {
       const res = await settle(saveReport());
       if (res.ok && res.path) showText("Report saved", `${res.path}\n\nAttach this file when you report a problem.`);
-      else notify("DeckyReshade", res.error ?? "The report could not be saved.");
+      else notify(NAME, res.error ?? "The report could not be saved.");
+    };
+    // The dialog hides the panel, so the outcome is always a toast (UI.md §5); run() already toasts a refusal.
+    const remove = async () => {
+      resetWizard();
+      onRemoved();
+      const r = await run(removeData);
+      if (r.ok) notify(NAME, "Downloaded files were removed. Setup starts again the next time you open this menu.");
+      else if (r.error && r.error === r.state?.job.error) notify(NAME, r.error);
     };
     return (
       <>
         <PanelSection title="Logs">
+          {infoRow("ReShade's own log", "Each game's page has Show ReShade log: what ReShade did in that game and which effects failed.")}
           <PanelSectionRow>
-            <Field label="ReShade's own log" description="Each game's page has Show ReShade log: what ReShade did in that game and which effects failed." />
-          </PanelSectionRow>
-          <PanelSectionRow>
-            <ButtonItem layout="below" onClick={showLog}
+            <ActionButton onClick={showLog}
               description="Everything the plugin did: downloads, games turned on or off, launch options before and after, errors.">
               Show plugin log
-            </ButtonItem>
+            </ActionButton>
           </PanelSectionRow>
           <PanelSectionRow>
-            <ButtonItem layout="below" onClick={report}
+            <ActionButton onClick={report}
               description="Saves the plugin log, settings and every game's ReShade log to one file in Downloads, to attach to a bug report.">
               Save report to Downloads
-            </ButtonItem>
+            </ActionButton>
           </PanelSectionRow>
         </PanelSection>
         <PanelSection title="Start over">
           <PanelSectionRow>
-            <ButtonItem layout="below" disabled={working}
+            <ActionButton disabled={working}
               onClick={() => state.enabled.length
-                ? notify("DeckyReshade", "Turn ReShade off in all games first (Games); they still use these files.")
-                : confirm("Remove downloaded files?", "ReShade, the shader compiler, AutoHDR, RenoDX mods and all shader packages are deleted from this device. Setup starts again next time.",
-                    "Remove", () => { resetWizard(); onRemoved(); run(removeData); })}
+                ? notify(NAME, "Turn ReShade off in all games first (Games); they still use these files.")
+                : confirmAction("Remove downloaded files?", "ReShade, the shader compiler, AutoHDR, RenoDX mods and all shader packages are deleted from this device. Setup starts again next time. Your games and their ReShade settings stay.",
+                    "Remove", () => void remove(), { destructive: true })}
               description="Deletes ReShade, add-ons and shaders from this device. Games must be turned off first.">
               Remove downloaded files
-            </ButtonItem>
+            </ActionButton>
           </PanelSectionRow>
         </PanelSection>
       </>
     );
   };
-
-// ---- plugin updates ------------------------------------------------------------------------------------------------
-
-// Survives the QAM remounting the panel, like the panel state.
-let updateView: { info: UpdateInfo | null; checking: boolean; downloading: boolean; path: string | null } =
-  { info: null, checking: false, downloading: false, path: null };
-
-const versionTag = (value: string) => (
-  <span style={{ fontWeight: 700, color: "var(--gpColor-White, #fff)", background: "rgba(102,192,244,.18)", borderRadius: "4px", padding: "1px 6px" }}>
-    v{value}
-  </span>
-);
-
-// Same flow as FSR4 Injector and the Companion plugins (DeckyKit's dk_update): check GitHub, download the verified
-// release ZIP to Downloads, install it by hand.
-const Updates: FC<{ version: string }> = ({ version }) => {
-  const [view, setViewRaw] = useState(updateView);
-  const setView = (next: Partial<typeof updateView>) => { updateView = { ...updateView, ...next }; setViewRaw(updateView); };
-  const { info, checking, downloading, path } = view;
-
-  const check = async () => {
-    if (updateView.checking || updateView.downloading) return;
-    setView({ checking: true, info: null, path: null });
-    setView({ info: await settle(checkForUpdates()), checking: false });
-  };
-
-  const download = async () => {
-    const expected = updateView.info?.latest_version;
-    if (!expected || updateView.checking || updateView.downloading) return;
-    setView({ downloading: true });
-    const res = await settle(performUpdate(expected));
-    if (res.ok && res.path && res.version === expected) setView({ path: res.path });
-    else setView({ info: { ...(updateView.info ?? { ok: false }), ok: false, error: res.error ?? "The download did not finish." } });
-    setView({ downloading: false });
-  };
-
-  return (
-    <PanelSection title="Plugin updates">
-      <PanelSectionRow>
-        <div style={muted}>
-          Installed: {versionTag(info?.current_version ?? version)}
-          {info?.ok && info.latest_version && <>{" · "}Latest: {versionTag(info.latest_version)}</>}
-        </div>
-      </PanelSectionRow>
-      {info && !info.ok && <PanelSectionRow><div style={errorBox}>{info.error}</div></PanelSectionRow>}
-      {info?.ok && info.message && <PanelSectionRow><div style={{ fontSize: "12px", ...warnText }}>{info.message}</div></PanelSectionRow>}
-      {info?.ok && !info.update_available && !info.no_release && !path && (
-        <PanelSectionRow><div style={{ fontSize: "12px", ...okText }}>Up to date</div></PanelSectionRow>
-      )}
-      {info?.ok && info.download_available && !path && (
-        <PanelSectionRow>
-          <ButtonItem layout="below" disabled={checking || downloading} onClick={download}
-            description="Downloads the release ZIP from GitHub to the Downloads folder and checks it.">
-            {downloading ? "Downloading…" : `Download v${info.latest_version}`}
-          </ButtonItem>
-        </PanelSectionRow>
-      )}
-      {path && (
-        <PanelSectionRow>
-          <Field focusable label="Update downloaded" description={<span>
-            Saved to <span style={{ fontFamily: "monospace", overflowWrap: "anywhere" }}>{path}</span>. To install:
-            Decky → Settings → Developer → Install Plugin from ZIP. Your games stay set up.
-          </span>} />
-        </PanelSectionRow>
-      )}
-      <PanelSectionRow>
-        <ButtonItem layout="below" disabled={checking || downloading} onClick={check}
-          description="Compares the installed version with the latest GitHub release.">
-          {checking ? "Checking…" : "Check for updates"}
-        </ButtonItem>
-      </PanelSectionRow>
-    </PanelSection>
-  );
-};
-
-export const AboutPage: FC<{ version: string }> = ({ version }) => (
-  <>
-    <PanelSection title="DeckyReshade">
-      <PanelSectionRow>
-        <Field label={`Version ${version}`} description="ReShade for Steam and non-Steam games under Proton, set up from Gaming Mode." />
-      </PanelSectionRow>
-      <PanelSectionRow>
-        <Field label="Author" description="Rayek · BSD-3-Clause open-source plugin." />
-      </PanelSectionRow>
-      <PanelSectionRow>
-        <Field label="Downloaded on your device" description="ReShade by crosire (reshade.me); AutoHDR add-on by EndlesslyFlowering; AdvancedAutoHDR by Pumbo; RenoDX mods by their authors; shaders by theirs." />
-      </PanelSectionRow>
-    </PanelSection>
-    <Updates version={version} />
-  </>
-);

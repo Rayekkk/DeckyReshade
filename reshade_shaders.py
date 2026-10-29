@@ -179,7 +179,7 @@ def install(root, package, cancel=None):
         _save_index(root, index)
         return len(files)
     except OSError as e:
-        raise ShaderError(f"{package['name']} could not be saved ({e.strerror or type(e).__name__}).") from e
+        raise ShaderError(f"{package['name']} could not be saved ({dk_fs.shown(e)}).") from e
     finally:
         shutil.rmtree(part, ignore_errors=True)
 

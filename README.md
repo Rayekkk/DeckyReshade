@@ -29,7 +29,7 @@ update. DeckyReshade does all of that from the Quick Access Menu and keeps track
 | **Per game** | The game you are playing is at the top. The executable, its bitness and its graphics API are read from the game files; you can change both |
 | **Non-Steam games** | Windows games and emulators added to Steam work like Steam games |
 | **AutoHDR** | HDR for SDR games on HDR screens (Steam Deck OLED, Legion Go 2 and other OLED handhelds), per game |
-| **RenoDX** | Every game in your library that has a [RenoDX](https://github.com/clshortfuse/renodx) HDR mod shows its status (✅ working or 🚧 in progress); one switch downloads and installs it |
+| **RenoDX** | Every game in your library that has a [RenoDX](https://github.com/clshortfuse/renodx) HDR mod shows its status (working or in progress); one switch downloads and installs it |
 | **ReShade updates** | The newest ReShade DeckyReshade has checksums for, updated automatically in every game, or a fixed version (6.3.3 to 6.8.0); a newer ReShade on reshade.me is announced and comes with a plugin update |
 | **Shader packages** | The same list ReShade's own installer offers, shared by all games, with updates |
 | **Safe launch options** | `WINEDLLOVERRIDES` entries are merged with what is already there and restored exactly when you turn ReShade off; [Decky Launch Options](https://github.com/Rayekkk/DeckyLaunchOptions) gets its own ReShade tab |

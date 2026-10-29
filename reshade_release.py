@@ -158,7 +158,7 @@ def fetch(root, version, addon, cancel=None):
         shutil.rmtree(folder, ignore_errors=True)
         os.replace(part, folder)
     except OSError as e:
-        raise ReleaseError(f"ReShade could not be saved ({e.strerror or type(e).__name__}).") from e
+        raise ReleaseError(f"ReShade could not be saved ({dk_fs.shown(e)}).") from e
     finally:
         shutil.rmtree(part, ignore_errors=True)
     return folder

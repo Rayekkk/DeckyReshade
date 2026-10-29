@@ -14,7 +14,7 @@ First version.
   all changeable.
 - **Non-Steam games:** Windows shortcuts and emulators work like Steam games.
 - **AutoHDR:** per game, the AutoHDR add-on, Pumbo's AdvancedAutoHDR and DXVK_HDR=1, with a first preset.
-- **RenoDX:** per game, the mod list from the RenoDX wiki with each mod's status (✅/🚧), matched to the library,
+- **RenoDX:** per game, the mod list from the RenoDX wiki with each mod's status (working, in progress), matched to the library,
   installed and updated from its author's snapshot builds.
 - **ReShade versions:** the newest version DeckyReshade has checksums for, with automatic updates, or a fixed known
   version (6.3.3 to 6.8.0).
@@ -30,6 +30,18 @@ First version.
 
 - **Plugin updates:** when no DeckyReshade release is published (or the repository is private), the panel says so
   instead of "Up to date".
+- **Panel:** looks and reads like the other plugins. About stays the last row of the main page; on its page the plugin
+  info comes first and Updates at the bottom, with the same texts as elsewhere ("Checking GitHub…", "Download 0.2.0",
+  a downloaded update shown as `~/Downloads/…`). The rows of the main page show how things stand ("1 with ReShade ·
+  2 games", "ReShade 6.8.0 · add-on build").
+- **Panel:** B goes back one page instead of closing the menu, and the row you came from is selected again.
+- **Panel:** when the plugin cannot start, the panel says "DeckyReshade unavailable" with a Try again button, and
+  plugin updates are still reachable below it. A game page that cannot be read offers Try again too; a game
+  without a Windows executable (a native Linux game) says "Game not supported" and why, with nothing to retry.
+- **Panel:** a refused change (a game, a setting, a shader package) is also shown at the top of the page until your
+  next action, not only in a message. Removing the downloaded files asks with a warning and reports when it is done.
+- **Panel:** RenoDX statuses are words ("Working, playable", "In progress…") instead of emoji; the mod list marks
+  them with ✓ and ⚠.
 - **Shaders:** the package list loads like any other download, shown at the top of the panel, and waits for a
   download that is already running.
 - **Panel:** a change asked for while a download is running is answered with a message instead of being ignored.

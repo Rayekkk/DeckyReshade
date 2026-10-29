@@ -4,6 +4,7 @@
 // The backend's answers and calls. Every call answers { ok, error?, state?, ... } (DeckyKit D2); callers go
 // through settle() so a dead backend is an answer too, never a rejected promise.
 import { callable } from "@decky/api";
+import { UpdateCheck, UpdateDownload } from "./about";
 import { Result } from "./result";
 
 export const APIS = ["dxgi", "d3d9", "d3d10", "d3d11", "d3d12", "opengl32", "dinput8"] as const;
@@ -18,13 +19,13 @@ export const API_LABEL: Record<string, string> = {
   dinput8: "Any API, loaded via dinput8 (fallback)",
   vulkan: "Vulkan (not supported yet)",
 };
-// The RenoDX wiki's legend, with its emoji.
+// The RenoDX wiki's legend, in words (UI.md §9: no emoji in states); other statuses show the mod's own note.
 export const RENODX_STATUS: Record<string, string> = {
-  working: "✅ Working, playable",
-  wip: "🚧 In progress, lacking testing, or may have deal-breaking issues",
+  working: "Working, playable",
+  wip: "In progress, lacking testing, or may have deal-breaking issues",
 };
-export const renodxBadge = (status?: string | null) =>
-  (status === "working" ? "✅" : status === "wip" ? "🚧" : status ? "⚠️" : "");
+// In the dense mod list a symbol stands for the status: ✓ working, ⚠ anything else.
+export const renodxBadge = (status?: string | null) => (status === "working" ? "✓" : status ? "⚠" : "");
 // What a pinned version is for; the newest is what "latest" falls back to.
 export const VERSION_NOTE: Record<string, string> = { "6.5.1": "for DXVK HDR games whose ReShade menu breaks" };
 
@@ -35,6 +36,7 @@ export interface LogSummary { found: boolean; modified: number; version: string;
 
 export interface State {
   version: string;
+  home: string;
   reshade: {
     // latest: what reshade.me offers; known: the newest version the plugin can check (what "latest" installs);
     // newer_than_known: a release that comes with a plugin update
@@ -53,6 +55,7 @@ export interface State {
 }
 
 export interface GameInfo extends Result<never> {
+  unsupported?: boolean; // a refusal that lasts (no Windows executable): no Try again
   candidates?: { exe: string; bits: number; running?: boolean }[];
   exe?: string;
   bits?: number;
@@ -68,11 +71,6 @@ export interface GameInfo extends Result<never> {
 
 export interface ToggleResult extends Result<never> {
   launch_options?: string; kept?: string[]; dlo?: boolean; dlo_leftover?: string;
-}
-
-export interface UpdateInfo extends Result<never> {
-  current_version?: string; latest_version?: string; update_available?: boolean; download_available?: boolean;
-  asset_name?: string; no_release?: boolean;
 }
 
 export const getState = callable<[], Result<State>>("get_state");
@@ -95,5 +93,5 @@ export const sessionStarted = callable<[number], Result<never> & { managed?: boo
 export const sessionEnded = callable<[number], Result<never> & { managed?: boolean; loaded?: boolean; warning?: string }>("session_ended");
 export const getLogs = callable<[number, string], Result<never> & { plugin?: string; reshade?: string }>("get_logs");
 export const saveReport = callable<[], Result<never> & { path?: string }>("save_report");
-export const checkForUpdates = callable<[], UpdateInfo>("check_for_updates");
-export const performUpdate = callable<[string], Result<never> & { path?: string; version?: string }>("perform_update");
+export const checkForUpdates = callable<[], UpdateCheck>("check_for_updates");
+export const performUpdate = callable<[string], UpdateDownload>("perform_update");

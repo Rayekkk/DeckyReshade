@@ -78,7 +78,7 @@ def _read_json(path):
     try:
         loaded = dk_fs.load_json(path, {}, validate=dk_fs.require_object)
     except OSError as e:
-        decky.logger.error(f"{os.path.basename(path)} could not be read: {e.strerror or type(e).__name__}")
+        decky.logger.error(f"{os.path.basename(path)} could not be read: {dk_fs.shown(e)}")
         return {}
     if loaded.status in ("recovered", "lost"):
         decky.logger.warning(f"{os.path.basename(path)} {loaded.status}: {loaded.detail}")
@@ -205,6 +205,7 @@ class Plugin:
         packages = reshade_shaders.installed(self.shaders_root)  # read once: the panel polls this during downloads
         return {
             "version": VERSION,
+            "home": _home(),  # the About page shows a saved update as ~/…
             # latest: what reshade.me offers; known: the newest version this plugin can check and install;
             # newer_than_known: a release that comes with a plugin update
             "reshade": {"installed": installed, "addon": self.release.get("addon", False), "latest": latest,
@@ -245,7 +246,7 @@ class Plugin:
 
     def _settings_failed(self, e):
         decky.logger.error(f"settings not saved: {e}")
-        return dk_rpc.fail(f"The settings could not be saved ({e.strerror or type(e).__name__}).", self._state())
+        return dk_rpc.fail(f"The settings could not be saved ({dk_fs.shown(e)}).", self._state())
 
     @rpc
     async def set_setting(self, key: str, value: bool) -> dict:
@@ -488,7 +489,9 @@ class Plugin:
             candidates = [chosen] + candidates
         chosen = chosen or (candidates[0] if candidates else None)
         if not chosen:
-            return dk_rpc.fail("No Windows executable found in this game's folder (a native Linux game?).")
+            # lasting: the panel shows the reason without Try again (UI.md §4)
+            return dk_rpc.fail("No Windows executable found in this game's folder (a native Linux game?).",
+                               unsupported=True)
         api, how = await asyncio.to_thread(reshade_games.detect_api, os.path.join(game["install_dir"], chosen["exe"]))
         folder = os.path.dirname(os.path.join(game["install_dir"], chosen["exe"]))
         auto = self.renodx_match.get(appid)
@@ -672,7 +675,7 @@ class Plugin:
                 path = await asyncio.to_thread(self._report)
         except OSError as e:
             decky.logger.exception("report failed")
-            return dk_rpc.fail(f"The report could not be saved ({e.strerror or type(e).__name__}).")
+            return dk_rpc.fail(f"The report could not be saved ({dk_fs.shown(e)}).")
         decky.logger.info("report saved to Downloads")
         return dk_rpc.ok(path=path)
 
