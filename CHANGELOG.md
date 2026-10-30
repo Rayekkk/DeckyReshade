@@ -50,6 +50,10 @@ All notable changes to DeckyReshade, newest first.
 - A ReShade tab (Off or an API per game, AutoHDR) can be added there, and games it runs
   keep their launch options under its control.
 
+**About**
+- **Use Rayek's store** makes Rayek's store Decky's store channel after you confirm, so Decky's Store tab
+  lists Rayek's plugins and offers their updates.
+
 ### 🔧 Changed
 
 **Updates**

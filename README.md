@@ -65,6 +65,11 @@ BattlEye, XIGNCODE, nProtect GameGuard, PunkBuster, EQU8) get a red warning on t
    **General**, then open **Developer**.
 4. Choose **Install Plugin from ZIP**, select the archive, then open **ReShade** in Decky.
 
+**Rayek's store:** **About → Use Rayek's store** sets Decky's store channel to Rayek's store
+(`https://decky.rayek.workers.dev`) after you confirm, so Decky's **Store** tab lists Rayek's plugins and offers
+their updates. Plugins from the official store stay installed, but get no update offers while it is selected;
+switch back in **Decky Settings → General → Store channel → Default**.
+
 ### Updating
 
 Open **About → Check for updates**. When a newer release is out, **Download** saves its ZIP to your Downloads

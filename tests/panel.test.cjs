@@ -266,7 +266,7 @@ test('About is the last row; its page has the plugin info first and Updates last
   find(tree, 'Field', 'About').props.onActivate();
   tree = h.render();
   const sections = all(tree).filter(n => n.type === 'PanelSection').map(n => n.props.title);
-  assert.deepEqual(sections, ['About', 'DeckyReshade', 'Updates']);
+  assert.deepEqual(sections, ['About', 'DeckyReshade', "Rayek's store", 'Updates']);
   assert.ok(find(tree, 'Field', 'Version 0.1.0'));
   assert.ok(find(tree, 'Field', 'Downloaded on your device'));
 });
