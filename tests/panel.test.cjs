@@ -150,6 +150,84 @@ test('a dropdown menu outside the QAM: the panel comes back on the game page and
   assert.ok(!find(tree, 'ToggleField', 'ReShade in this game'), 'a fresh open: the main page');
 });
 
+test('HDR: HDR off in Steam is said with a way there, and AutoHDR tells what the last start did', async () => {
+  const h = panel({ settingsStore: { m_ClientSettings: { gamescope_hdr_enabled: false } } });
+  h.running = { appid: 80 };
+  let tree = await open(h, state());
+  find(tree, 'Field', 'This game: Hades').props.onActivate();
+  h.render();
+  const log = { found: true, modified: 0, version: '6.8.0', errors: [], warnings: 0, autohdr: 'off' };
+  h.respond('get_game', gameInfo({ autohdr: true, renodx: { installed: '', auto: '', mod: null }, log }));
+  await settle();
+  tree = h.render();
+  assert.ok(button(tree, 'Open display settings'));
+  assert.ok(findText(tree, 'does not work with every game'));
+  // HDR on in Steam: no warning row
+  const on = panel({ settingsStore: { m_ClientSettings: { gamescope_hdr_enabled: true } } });
+  on.running = { appid: 80 };
+  tree = await open(on, state());
+  find(tree, 'Field', 'This game: Hades').props.onActivate();
+  on.render();
+  on.respond('get_game', gameInfo({ autohdr: true, renodx: { installed: '', auto: '', mod: null }, log: { ...log, autohdr: 'on' } }));
+  await settle();
+  tree = on.render();
+  assert.equal(button(tree, 'Open display settings'), undefined);
+  assert.ok(findText(tree, 'The last start was in HDR.'));
+});
+
+test('an engine-wide RenoDX mod says what it is, and why when it cannot be installed from here', async () => {
+  const h = panel();
+  h.running = { appid: 80 };
+  let tree = await open(h, state());
+  find(tree, 'Field', 'This game: Hades').props.onActivate();
+  h.render();
+  const unity = { ...mod, name: 'Hades (Unity Engine)', engine: 'Unity Engine', note: 'Use DX11', host: 'github.com/notvoosh' };
+  h.respond('get_game', gameInfo({ enabled: false, renodx: { installed: '', auto: unity.name, mod: unity } }));
+  await settle();
+  tree = h.render();
+  assert.match(String(find(tree, 'ToggleField', 'Use the RenoDX mod').props.description), /Unity Engine mod from github\.com\/notvoosh/);
+  const note = all(tree).find(n => n.type === 'ModNote' || (n.type === 'div' && [].concat(n.props.children).includes('Use DX11')));
+  assert.ok(note, 'the note from its table, in a frame');
+  assert.match(note.props.style.border, /#73e3c0/, 'green: marked working');
+  const wip = { ...unity, status: 'wip' };
+  find(tree, 'DropdownItem', 'Executable').props.onChange({ data: 'GoW.exe' });
+  h.render();
+  h.respond('get_game', gameInfo({ enabled: false, renodx: { installed: '', auto: unity.name, mod: wip } }));
+  await settle();
+  tree = h.render();
+  const yellow = all(tree).find(n => n.type === 'div' && [].concat(n.props.children).includes('Use DX11'));
+  assert.match(yellow.props.style.border, /#f5c96b/, 'yellow: still being tested');
+  // anything else (broken, abandoned, superseded): red, and the status line only says it is not marked working
+  const broken = { ...unity, status: 'other', note: 'Use the Luma Framework mod below', files: [] };
+  find(tree, 'DropdownItem', 'Executable').props.onChange({ data: 'GoW.exe' });
+  h.render();
+  h.respond('get_game', gameInfo({ enabled: false, renodx: { installed: '', auto: unity.name, mod: broken } }));
+  await settle();
+  tree = h.render();
+  const red = all(tree).find(n => n.type === 'div' && [].concat(n.props.children).includes('Use the Luma Framework mod below'));
+  assert.match(red.props.style.border, /#ff9ca6/);
+  const field = find(tree, 'Field', 'RenoDX mod');
+  assert.ok(all(field).includes(red), 'the frame is at the bottom of the RenoDX mod field, not under the switch');
+  assert.ok(findText(tree, 'Not marked working in the RenoDX list.'));
+  // an Unreal Engine game whose list asks for Engine.ini: the switch says the plugin sets it up and puts it back
+  const ue = { ...mod, name: 'Hades (Unreal Engine Extended)', engine: 'Unreal Engine Extended', note: 'Engine.ini',
+    engine_ini: { SystemSettings: { 'r.HDR.EnableHDROutput': '1' } }, settings: { renodx: { Set_Path: '0' } } };
+  find(tree, 'DropdownItem', 'Executable').props.onChange({ data: 'GoW.exe' });
+  h.render();
+  h.respond('get_game', gameInfo({ enabled: false, renodx: { installed: '', auto: ue.name, mod: ue } }));
+  await settle();
+  tree = h.render();
+  assert.match(String(find(tree, 'ToggleField', 'Use the RenoDX mod').props.description),
+    /turns on HDR in the game's Engine\.ini \(read-only, as the RenoDX list asks\) and sets Upgrade Path to Off/);
+  const linkOnly = { ...unity, files: [], page: 'https://github.com/clshortfuse/renodx/wiki/Mods' };
+  find(tree, 'DropdownItem', 'Executable').props.onChange({ data: 'GoW.exe' });
+  h.render();
+  h.respond('get_game', gameInfo({ enabled: false, renodx: { installed: '', auto: unity.name, mod: linkOnly } }));
+  await settle();
+  tree = h.render();
+  assert.match(String(find(tree, 'ToggleField', 'Use the RenoDX mod').props.description), /needs steps for this game that DeckyReshade cannot take/);
+});
+
 test('a game page: a failed read offers Try again, a game that cannot be supported only says why', async () => {
   const h = panel();
   let tree = await open(h, state());

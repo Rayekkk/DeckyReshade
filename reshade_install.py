@@ -17,6 +17,7 @@ Rules that make rollback safe:
     again on removal while it is still ours.
 """
 
+import hashlib
 import os
 import re
 import shutil
@@ -30,6 +31,7 @@ COMPILER = "d3dcompiler_47.dll"
 INI = "ReShade.ini"
 PRESET = "ReShadePreset.ini"
 LOG = "ReShade.log"
+ENGINE_INI = "Engine.ini"
 BACKUP = ".deckyreshade-backup"  # a game file set aside while ours is in its place
 REGISTRY = "user.reg"  # the prefix's HKEY_CURRENT_USER
 WINE_OVERRIDE = "native,builtin"
@@ -51,13 +53,15 @@ def _check_manifest(data):
                 or "wine" in e and not (isinstance(e["wine"], dict)
                                         and all(isinstance(e["wine"].get(k), str) for k in ("prefix", "exe", "dll")))
                 or "backups" in e and not (isinstance(e["backups"], dict) and all(
-                    isinstance(k, str) and isinstance(v, str) for k, v in e["backups"].items()))):
+                    isinstance(k, str) and isinstance(v, str) for k, v in e["backups"].items()))
+                or "engine_ini" in e and not (isinstance(e["engine_ini"], dict) and all(
+                    isinstance(e["engine_ini"].get(k), str) for k in ("path", "sha256")))):
             raise ValueError(f"entry {appid!r} is not a game set up by this plugin")
 
 
 class Manifest:
     """appid -> {name, target_dir, exe, api, bits, files: {name: sha256}, wine?: {prefix, exe, dll},
-    backups?: {name: sha256 of the game's own file set aside}}
+    backups?: {name: sha256 of the game's own file set aside}, engine_ini?: {path, existed, mode, sha256}}
 
     It is the only record of what the plugin put into game folders. A damaged file comes back from its last-good
     copy; when that is impossible (or the file cannot be read) `problem` says why and nothing is saved over it, so
@@ -245,6 +249,110 @@ def with_shader_paths(text, shaders_dir):
     return "\n".join(lines) + "\n"
 
 
+def with_values(text, values):
+    """An INI text with values ({section: {key: value}}) set: an existing key gets the value, a missing one goes at the
+    top of its section, a missing section at the end; everything else stays. Sections and keys match without case,
+    as ReShade and Unreal Engine read them."""
+    lines = text.splitlines()
+    for section, keys in values.items():
+        start = next((i for i, l in enumerate(lines) if l.strip().lower() == f"[{section}]".lower()), None)
+        if start is None:
+            while lines and not lines[-1].strip():
+                lines.pop()
+            lines += ([""] if lines else []) + [f"[{section}]"] + [f"{k}={v}" for k, v in keys.items()]
+            continue
+        for key, value in keys.items():
+            end = next((i for i in range(start + 1, len(lines)) if lines[i].strip().startswith("[")), len(lines))
+            at = next((i for i in range(start + 1, end)
+                       if lines[i].strip().partition("=")[0].strip().lower() == key.lower()), None)
+            if at is None:
+                lines.insert(start + 1, f"{key}={value}")
+            else:
+                lines[at] = f"{key}={value}"
+    return "\n".join(lines) + "\n"
+
+
+def with_hdr(text):
+    """ReShade.ini with the AutoHDR add-on's switch on: [HDR] EnableHDR=1. It is off by default, and the add-on then
+    leaves the game in SDR (it puts the swap chain in scRGB only with it)."""
+    return with_values(text, {"HDR": {"EnableHDR": "1"}})
+
+
+def unreal_project(install_dir, exe):
+    """The Unreal Engine project a game is (its settings live under its name): the folder holding the exe's Binaries,
+    or the one folder beside Engine with Binaries and Content (Satisfactory runs Engine/Binaries/…); '' when unclear."""
+    parts = exe.replace("\\", "/").split("/")
+    if "Binaries" in parts[1:] and parts[parts.index("Binaries") - 1].lower() != "engine":
+        return parts[parts.index("Binaries") - 1]
+    try:
+        names = sorted(os.listdir(install_dir))
+    except OSError:
+        return ""
+    found = [n for n in names if n.lower() != "engine" and os.path.isdir(os.path.join(install_dir, n, "Binaries"))
+             and os.path.isdir(os.path.join(install_dir, n, "Content"))]
+    return found[0] if len(found) == 1 else ""
+
+
+def engine_ini_path(prefix, project):
+    """The game's Engine.ini in its prefix (%LOCALAPPDATA%\\<project>\\Saved\\Config\\<platform>), '' while the game
+    has not made that folder yet: Windows for Unreal Engine 5, WindowsNoEditor for 4."""
+    base = os.path.join(prefix, "pfx", "drive_c", "users", "steamuser", "AppData", "Local", project, "Saved", "Config")
+    for platform in ("Windows", "WindowsNoEditor"):
+        if os.path.isdir(os.path.join(base, platform)):
+            return os.path.join(base, platform, ENGINE_INI)
+    return ""
+
+
+def _set_engine_ini(manifest, appid, entry, path, values):
+    """Our values in the game's Engine.ini, the file then read-only as the RenoDX list asks (the game would write it
+    back); the original set aside beside it, recorded before anything changes."""
+    try:
+        with open(path, "rb") as f:
+            data = f.read()
+        mode = os.stat(path).st_mode & 0o777
+    except FileNotFoundError:
+        data, mode = None, None
+    text = (data or b"").decode("utf-8-sig", "replace")
+    eol = "\r\n" if "\r\n" in text else "\n"
+    new = with_values(text.replace("\r\n", "\n"), values).replace("\n", eol).encode("utf-8")
+    backup = path + BACKUP
+    if data is not None:
+        if os.path.lexists(backup) and sha256_file(backup) != hashlib.sha256(data).hexdigest():
+            raise InstallError(f"{ENGINE_INI + BACKUP} in the game's settings is not its {ENGINE_INI}; leaving both alone")
+        shutil.copy2(path, backup)
+    entry["engine_ini"] = {"path": path, "existed": data is not None, "mode": mode,
+                           "sha256": hashlib.sha256(new).hexdigest()}
+    manifest.save()
+
+    def fill(tmp):
+        with open(tmp, "wb") as f:
+            f.write(new)
+    if data is not None:
+        os.chmod(path, 0o644)  # a file already read-only cannot be replaced on Windows
+    _replace_via_tmp(path, fill)
+    os.chmod(path, 0o444)
+
+
+def _undo_engine_ini(entry, kept):
+    """Put the game's Engine.ini back as it was, while it is still what we wrote."""
+    ini = entry.get("engine_ini")
+    if not ini:
+        return
+    path, backup = ini["path"], ini["path"] + BACKUP
+    current = sha256_file(path) if os.path.isfile(path) else None
+    if current not in (None, ini["sha256"]):
+        kept.append(ENGINE_INI)  # changed since: the user's now (the original stays beside it)
+    elif ini["existed"] and os.path.isfile(backup):
+        if current:
+            os.chmod(path, 0o644)  # ours is read-only, which Windows will not replace
+        os.replace(backup, path)
+        os.chmod(path, ini["mode"] if ini["mode"] is not None else 0o644)
+    elif current and not ini["existed"]:
+        os.chmod(path, 0o644)
+        os.remove(path)
+    del entry["engine_ini"]
+
+
 def _replace_via_tmp(dst, fill):
     """Write through a temp file, so a failed copy (a full SD card) never leaves half a DLL or the temp file."""
     tmp = dst + ".reshade-tmp"
@@ -277,13 +385,16 @@ def autohdr_preset():
     return f"Techniques={techniques}\nTechniqueSorting={techniques}\n"
 
 
-def enable(manifest, game, exe, api, bits, sources, shaders_dir, prefix="", preset=None):
+def enable(manifest, game, exe, api, bits, sources, shaders_dir, prefix="", preset=None, hdr=False, settings=None,
+           engine_ini=None):
     """Install ReShade for one game.
 
     game: {appid, name, install_dir}; exe: path relative to install_dir; sources: {name in the game folder: file}
     (the ReShade DLL under the API's name, the matching d3dcompiler_47, add-ons); prefix: the game's Proton prefix
     when the API needs a Wine DLL override there ('' when the user manages launch options); preset:
-    ReShadePreset.ini to start with when the game has none.
+    ReShadePreset.ini to start with when the game has none; hdr: AutoHDR is on (its switch in ReShade.ini, with_hdr);
+    settings: more ReShade.ini values ({section: {key: value}}, e.g. a RenoDX mod's); engine_ini: {path, values} for
+    the game's Engine.ini (an Unreal Engine game whose RenoDX mod asks for it), put back on removal.
     """
     appid = game["appid"]
     target = os.path.dirname(os.path.join(game["install_dir"], exe))
@@ -342,15 +453,17 @@ def enable(manifest, game, exe, api, bits, sources, shaders_dir, prefix="", pres
             entry["files"][name] = want[name]
             manifest.entries[appid] = entry  # recorded as soon as a file exists, so a crash can still be undone
             manifest.save()
-        ini = os.path.join(target, INI)
+        ini, text = os.path.join(target, INI), None
         if os.path.exists(ini):
             with open(ini, encoding="utf-8-sig", errors="replace") as f:
                 text = f.read()
-            updated = with_shader_paths(text, shaders_dir)
-            if updated.replace("\r\n", "\n") != text.replace("\r\n", "\n"):
-                _write_text(ini, updated)
-        else:
-            _write_text(ini, ini_text(shaders_dir))
+        updated = ini_text(shaders_dir) if text is None else with_shader_paths(text, shaders_dir)
+        if hdr:
+            updated = with_hdr(updated)
+        if settings:
+            updated = with_values(updated, settings)
+        if text is None or updated.replace("\r\n", "\n") != text.replace("\r\n", "\n"):
+            _write_text(ini, updated)
         preset_path = os.path.join(target, PRESET)
         if preset and not os.path.exists(preset_path):
             _write_text(preset_path, preset)
@@ -358,6 +471,12 @@ def enable(manifest, game, exe, api, bits, sources, shaders_dir, prefix="", pres
             entry["files"][PRESET] = sha256_file(preset_path)
     except OSError as e:
         raise InstallError(f"could not write to the game folder ({dk_fs.shown(e)})") from e
+    if engine_ini and not entry.get("engine_ini"):
+        manifest.entries[appid] = entry
+        try:
+            _set_engine_ini(manifest, appid, entry, engine_ini["path"], engine_ini["values"])
+        except OSError as e:
+            raise InstallError(f"could not change the game's Engine.ini ({dk_fs.shown(e)})") from e
 
     entry["enabled_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     manifest.entries[appid] = entry
@@ -438,6 +557,10 @@ def disable(manifest, appid):
                 kept.append(name + BACKUP)
         except OSError:
             kept.append(name + BACKUP)
+    try:
+        _undo_engine_ini(entry, kept)
+    except OSError:
+        kept.append(ENGINE_INI)
     # ReShade.log stays with ReShade.ini: it is what tells why ReShade did not work, often the reason to turn it off
     del manifest.entries[appid]
     manifest.save()

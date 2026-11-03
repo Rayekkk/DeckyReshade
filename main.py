@@ -48,6 +48,7 @@ REPOSITORY = "Rayekkk/DeckyReshade"
 # the user puts ReShade's line into each game's launch options (copied from the panel) and the plugin leaves Wine alone.
 DEFAULT_SETTINGS = {"addon": True, "version": "latest", "use_launch_options": False}
 CHECK_EVERY = 24 * 3600
+RENODX_FORMAT = 4  # 2: engine-wide mods, 3: notes without the engine, 4: Engine.ini and settings; older: fetched again
 AUTOHDR_PACKAGE = "advancedautohdr-by-pumbo"  # the effect that turns SDR into HDR, from ReShade's package list
 # Failures whose text is written for the user; anything else is shown by its type only (its text may hold a path).
 EXPECTED = (reshade_install.InstallError, reshade_release.ReleaseError, reshade_renodx.RenoDXError,
@@ -121,7 +122,7 @@ class Plugin:
             self.settings_path = os.path.join(decky.DECKY_PLUGIN_SETTINGS_DIR, "settings.json")
             # {"version", "addon"}: the ReShade build games use; {"latest", "checked_at", "check_error"}: reshade.me
             self.release_path = os.path.join(decky.DECKY_PLUGIN_SETTINGS_DIR, "reshade.json")
-            # the RenoDX wiki's mod list, kept between restarts: {"mods", "fetched_at", "error"}
+            # the RenoDX wiki's mod list, kept between restarts: {"mods", "fetched_at", "error", "format"}
             self.renodx_path = os.path.join(_data_dir(), "renodx.json")
             self.manifest = reshade_install.Manifest(os.path.join(decky.DECKY_PLUGIN_SETTINGS_DIR, "manifest.json"))
             self.settings, self.release = dict(DEFAULT_SETTINGS), {}
@@ -143,7 +144,7 @@ class Plugin:
         finally:
             _ready.set()  # also after a failure: calls then answer instead of waiting
         self._spawn(self.scan_games())
-        if time.time() - self.renodx.get("fetched_at", 0) > CHECK_EVERY:
+        if time.time() - self.renodx.get("fetched_at", 0) > CHECK_EVERY or self.renodx.get("format") != RENODX_FORMAT:
             self._spawn(self.refresh_renodx())
         if self._installed() and self.settings["version"] == "latest" and \
                 time.time() - self.release.get("checked_at", 0) > CHECK_EVERY:
@@ -285,7 +286,7 @@ class Plugin:
         reason in state.renodx.error."""
         try:
             mods = await asyncio.to_thread(reshade_renodx.fetch_list, self.cancel)
-            self.renodx = {"mods": mods, "fetched_at": time.time(), "error": ""}
+            self.renodx = {"mods": mods, "fetched_at": time.time(), "error": "", "format": RENODX_FORMAT}
             decky.logger.info(f"RenoDX list: {len(mods)} mods, {sum(1 for m in mods if m['files'])} installable")
         except reshade_renodx.RenoDXError as e:
             decky.logger.warning(f"RenoDX list: {e}")
@@ -529,8 +530,22 @@ class Plugin:
             prefix = await asyncio.to_thread(reshade_install.wine_prefix, game, _steam_root())
             if not prefix:
                 return dk_rpc.fail("Start the game once first, so Proton makes its Wine prefix; then turn ReShade on.")
+        engine_ini = None
+        if mod and mod.get("engine_ini"):  # an Unreal Engine game whose RenoDX mod wants HDR on in its Engine.ini
+            ini_prefix = prefix or await asyncio.to_thread(reshade_install.wine_prefix, game, _steam_root())
+            project = await asyncio.to_thread(reshade_install.unreal_project, install_dir, exe)
+            if not project:
+                return dk_rpc.fail("This game's Unreal Engine folders are not where DeckyReshade looks for them; "
+                                   "add the Engine.ini lines from the RenoDX list by hand.")
+            ini = await asyncio.to_thread(reshade_install.engine_ini_path, ini_prefix, project) if ini_prefix else ""
+            if not ini:
+                return dk_rpc.fail("Start the game once first, so it makes its settings folder; then turn the RenoDX "
+                                   "mod on.")
+            if await asyncio.to_thread(reshade_install.prefix_in_use, ini_prefix):
+                return dk_rpc.fail("Close the game first: it writes its Engine.ini when it exits.")
+            engine_ini = {"path": ini, "values": mod["engine_ini"]}
         decky.logger.info(f"enable {appid} '{game['name']}': {exe} {info['bits']}-bit api={api} autohdr={autohdr} "
-                          f"renodx={renodx!r} prefix={prefix!r}")
+                          f"renodx={renodx!r} prefix={prefix!r} engine_ini={engine_ini and engine_ini['path']!r}")
         renodx_file = None
         if mod:  # before the lock: a download must not hold up other games, the report or session checks
             decky.logger.info(f"RenoDX: downloading {mod['files'].get(str(info['bits']))}")
@@ -552,7 +567,8 @@ class Plugin:
                 await asyncio.to_thread(
                     reshade_install.enable, self.manifest, game, exe, api, info["bits"],
                     self._sources(api, info["bits"], autohdr, renodx_file), self.shaders_root, prefix,
-                    reshade_install.autohdr_preset() if autohdr else None)
+                    reshade_install.autohdr_preset() if autohdr else None, bool(autohdr),
+                    settings=(mod or {}).get("settings"), engine_ini=engine_ini)
                 self.manifest.entries[appid].update(autohdr=bool(autohdr), renodx=renodx, renodx_file=renodx_file)
                 await asyncio.to_thread(self.manifest.save)
             except Exception as e:
@@ -593,12 +609,24 @@ class Plugin:
         loaded = await asyncio.to_thread(reshade_install.loaded_since, entry, started)
         summary = await asyncio.to_thread(reshade_diag.reshade_log, entry["target_dir"])
         decky.logger.info(f"session ended: {appid} loaded={loaded} log errors={summary['errors']}")
+        # AutoHDR that left the game in SDR is said once per game, not after every session
+        hdr_failed = loaded and entry.get("autohdr") and summary["autohdr"] in ("off", "no_hdr") \
+            and not entry.get("autohdr_warned")
         async with self.lock:
             entry["missed"] = 0 if loaded else entry.get("missed", 0) + 1
+            if hdr_failed:
+                entry["autohdr_warned"] = True
             try:
                 await asyncio.to_thread(self.manifest.save)
             except (reshade_install.InstallError, OSError) as e:  # only a counter: the answer matters more
                 decky.logger.warning(f"session ended: {appid}: not saved: {e}")
+        if hdr_failed:
+            decky.logger.warning(f"AutoHDR in {appid}: {summary['autohdr']}")
+            return dk_rpc.ok(managed=True, loaded=True, warning=(
+                f"{entry['name']} ran without HDR: turn on HDR in Steam's display settings."
+                if summary["autohdr"] == "no_hdr" else
+                f"AutoHDR could not switch {entry['name']} to HDR: the add-on does not work with every game. "
+                "Turn AutoHDR off for it, or use a RenoDX mod if the game has one."))
         if loaded or entry["missed"] < 2:
             return dk_rpc.ok(managed=True, loaded=loaded)
         decky.logger.warning(f"ReShade did not load in {appid} twice: {entry['exe']} {entry['api']}")

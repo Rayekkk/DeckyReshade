@@ -31,8 +31,13 @@ export const VERSION_NOTE: Record<string, string> = { "6.5.1": "for DXVK HDR gam
 
 export interface Package { id: string; name: string; description: string; default: boolean; required: boolean }
 export interface Enabled { appid: number; name: string; api: string; exe: string; bits: number; autohdr: boolean; renodx: string }
-export interface RenodxMod { name: string; maintainer: string; status: string; note: string; files: string[]; page: string; host: string }
-export interface LogSummary { found: boolean; modified: number; version: string; errors: string[]; warnings: number }
+// engine: an engine-wide mod's engine ("Unity Engine"…), listed for this game in that mod's own table
+// engine_ini: Engine.ini values the plugin sets for an Unreal Engine game; settings: ReShade.ini values (Upgrade Path)
+export interface RenodxMod { name: string; maintainer: string; status: string; note: string; files: string[]; page: string; host: string;
+  engine?: string; engine_ini?: Record<string, Record<string, string>>; settings?: Record<string, Record<string, string>> }
+// autohdr: what the AutoHDR add-on did in the last start: switched to HDR, could not, no HDR display; "" without it
+export interface LogSummary { found: boolean; modified: number; version: string; errors: string[]; warnings: number;
+  autohdr?: "on" | "off" | "no_hdr" | "" }
 
 export interface State {
   version: string;

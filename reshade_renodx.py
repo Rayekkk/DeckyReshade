@@ -5,10 +5,17 @@
 
 The list of mods is the "Mods" page of the RenoDX wiki: a Markdown table of name, maintainer, download badges and a
 status (:white_check_mark: working, :construction: in progress, or a word such as "Abandoned"; a link title holds a
-note). Only the main list is read; engine-wide mods need per-game tweaking and are left out. A mod can be installed
-here when the table links its .addon64/.addon32 file directly, from the GitHub Pages or GitHub releases of an author
-in AUTHORS; mods only on Nexus Mods or Discord, or from anyone else, are shown with their status and a link and must
-be installed by hand.
+note). A mod can be installed here when the table links its .addon64/.addon32 file directly, from the GitHub Pages or
+GitHub releases of an author in AUTHORS; mods only on Nexus Mods or Discord, or from anyone else, are shown with their
+status and a link and must be installed by hand.
+
+Engine-wide mods ("Multi-Game Mods": ENGINES) work in many games of an engine but often need per-game steps. They are
+offered only for the games their own tables list, as "<game> (<engine>)" with the table's note, and installed from
+here only where that game is working and its note asks for nothing the plugin cannot do (BY_HAND: a build from
+Discord, DLSS changes, an Engine.ini edit other than the one below); the rest are links. The Source Engine one needs a
+DXVK proxy and is left out. The one Engine.ini edit the wiki spells out is done here: an Unreal Engine Extended game
+whose note starts with "Engine.ini" gets its HDR values (ENGINE_INI, or only those after "Only add") and the mod's
+Upgrade Path set to Off ("Set_Path": 0), as is a game whose note says "Upgrade Path: Off".
 
 The wiki is open to any GitHub user, so the list alone cannot say what is safe to put into a game. A file is
 installed only from a known author's GitHub release (<author>.github.io/<repo>/<file> is published as the release
@@ -30,7 +37,7 @@ from reshade_games import pe_info
 
 LIST_URL = "https://raw.githubusercontent.com/wiki/clshortfuse/renodx/Mods.md"
 MAX_LIST = 4 << 20
-MAX_ADDON = 64 << 20
+MAX_ADDON = 256 << 20  # the Unity engine-wide add-on is about 105 MB (its shaders built in)
 MAX_RELEASE = 8 << 20  # GitHub's description of a release with 500+ assets is about 1 MB
 # GitHub accounts of the RenoDX authors whose add-ons can be installed from here: every account the wiki's mod list
 # linked a file from on 2026-10-27 (24 accounts, 275 files). A new author is added here and ships with a plugin release.
@@ -46,6 +53,29 @@ _PAGES = re.compile(r"https://([A-Za-z0-9-]+)\.github\.io/([\w.-]+)/([\w.-]+\.ad
 _RELEASE = re.compile(r"https://github\.com/([A-Za-z0-9-]+)/([\w.-]+)/releases/download/([\w.-]+)/"
                       r"([\w.-]+\.addon(?:32|64))")
 _DIGEST = re.compile(r"sha256:([0-9a-fA-F]{64})")
+WIKI_PAGE = "https://github.com/clshortfuse/renodx/wiki/Mods"
+# the most precise first: a game in both Unreal tables gets the Extended rework
+ENGINES = ("Unreal Engine Extended", "Unreal Engine", "Unity Engine")
+BY_HAND = re.compile(r"engine\.ini|discord|dlss|nexus|\bbuild\b", re.IGNORECASE)
+_HTML = re.compile(r"<[^>]+>")
+# Unreal Engine Extended's Engine.ini for HDR, as its wiki section gives it (the LUT line: real-time sliders on UE 5.3+)
+ENGINE_INI = {"SystemSettings": {"r.AllowHDR": "1", "r.HDR.EnableHDROutput": "1", "r.HDR.Display.OutputDevice": "3",
+                                 "r.HDR.Display.ColorGamut": "2", "r.HDR.UI.CompositeMode": "1"},
+              "/Script/Engine.RendererSettings": {"r.LUT.UpdateEveryFrame": "1"}}
+_CVAR = re.compile(r"\b(r\.[\w.]+)=([\w.]+)")
+_UPGRADE_OFF = re.compile(r"upgrade path:\s*off", re.IGNORECASE)
+
+
+def _engine_ini(note):
+    """The Engine.ini values a game's note asks for (all of ENGINE_INI, or only the ones after "Only add")."""
+    only = note.lower().find("only add")
+    if only < 0:
+        return ENGINE_INI
+    values = {}
+    for name, value in _CVAR.findall(note[only:]):
+        section = next((s for s, keys in ENGINE_INI.items() if name in keys), "SystemSettings")
+        values.setdefault(section, {})[name] = value
+    return values or ENGINE_INI
 
 
 class RenoDXError(Exception):
@@ -94,18 +124,63 @@ def _status(cell):
     return "other", re.sub(r"[\[\]*_`]", "", _LINK.sub(r"\1", cell)).strip()
 
 
+def _rows(section):
+    """The cells of a Markdown table's rows, without its header and alignment lines."""
+    for line in section.splitlines():
+        cells = [c.strip() for c in line.strip().strip("|").split("|")]
+        if line.startswith("|") and cells[0] not in ("Name", "") and not cells[0].startswith(":-"):
+            yield cells
+
+
+def _note(cell):
+    """A table's note as plain text (it may hold HTML, links and code marks)."""
+    return re.sub(r"\s+", " ", re.sub(r"[`*]", "", _LINK.sub(r"\1", _HTML.sub(" ", cell)))).strip()
+
+
+def _engine_mods(text):
+    """The engine-wide mods' per-game entries, in ENGINES order (see the module's description)."""
+    part = text.split("\n## Multi-Game Mods", 1)
+    if len(part) < 2:
+        return []
+    found = {}
+    for section in re.split(r"\n ?### ", re.split(r"\n# ", part[1], maxsplit=1)[0])[1:]:
+        engine = section.split("[", 1)[0].splitlines()[0].strip()
+        head = section.split("\n|", 1)[0]
+        files = {bits: url for url, _, bits in _FILE.findall(head) if trusted(url)}
+        if engine not in ENGINES or not files:
+            continue
+        author = source(next(iter(files.values())))[0]
+        rows = found.setdefault(engine, [])
+        for cells in _rows(section):
+            name, note = _LINK.sub(r"\1", cells[0]).strip(), _note(cells[2]) if len(cells) > 2 else ""
+            status = _status(cells[1])[0] if len(cells) > 1 else "other"
+            if not name:
+                continue
+            row = {"name": f"{name} ({engine})", "maintainer": author, "status": status, "note": note,
+                   "engine": engine, "page": WIKI_PAGE}
+            by_hand = BY_HAND.search(note)
+            if engine == "Unreal Engine Extended" and note.lower().startswith("engine.ini"):
+                row["engine_ini"] = _engine_ini(note)
+                by_hand = BY_HAND.search(re.sub(r"engine\.ini", "", note, flags=re.IGNORECASE))
+            if "engine_ini" in row or _UPGRADE_OFF.search(note):
+                row["settings"] = {"renodx": {"Set_Path": "0"}}  # Upgrade Path: Off (the HDR path)
+            row["files"] = files if status == "working" and not by_hand else {}
+            rows.append(row)
+    return [m for engine in ENGINES for m in found.get(engine, [])]
+
+
 def parse(text):
-    """Mods of the main list: {name, maintainer, status: working|wip|other, note, files: {"64"|"32": url}, page}.
-    files holds only known authors' files; a mod without any keeps a link (its page, or another file) in page."""
+    """Mods of the main list, then the engine-wide mods' entries: {name, maintainer, status: working|wip|other, note,
+    files: {"64"|"32": url}, page, engine?}. files holds only known authors' files; a mod without any keeps a link
+    (its page, or another file) in page."""
     try:
         section = text.split("\n# List", 1)[1]
     except IndexError as e:
         raise RenoDXError("The RenoDX mod list has a layout this plugin does not understand.") from e
     section = re.split(r"\n#{1,2} ", section, maxsplit=1)[0]  # up to the multi-game mods
     mods = []
-    for line in section.splitlines():
-        cells = [c.strip() for c in line.strip().strip("|").split("|")]
-        if len(cells) < 4 or not line.startswith("|") or cells[0] in ("Name", "") or cells[0].startswith(":-"):
+    for cells in _rows(section):
+        if len(cells) < 4:
             continue
         name = _LINK.sub(r"\1", cells[0]).strip()
         linked = _FILE.findall(cells[2])
@@ -120,7 +195,7 @@ def parse(text):
                          "page": page})
     if not mods:
         raise RenoDXError("The RenoDX mod list is empty.")
-    return mods
+    return mods + _engine_mods(text)
 
 
 def fetch_list(cancel=None):
@@ -132,13 +207,14 @@ def fetch_list(cancel=None):
 
 
 def match(name, mods):
-    """The mod for a game name: the same name first, then the same name without bracketed parts; None if none."""
+    """The mod for a game name: the same name first, then the same name without bracketed parts (which also finds the
+    engine-wide entries); one that can be installed from here wins, so a game's own mod only on Nexus Mods, or one
+    superseded by an engine-wide mod, gives way to an engine-wide mod. None if none."""
+    found = []
     for reduce in (key, base_key):
         wanted = reduce(name)
-        found = next((m for m in mods if wanted and reduce(m["name"]) == wanted), None)
-        if found:
-            return found
-    return None
+        found += [m for m in mods if wanted and reduce(m["name"]) == wanted and m not in found]
+    return next((m for m in found if m["files"]), found[0] if found else None)
 
 
 def _asset(author, repo, tag, name, cancel):
@@ -158,7 +234,10 @@ def _asset(author, repo, tag, name, cancel):
     assets = [a for a in release.get("assets") or [] if isinstance(a, dict) and a.get("name") == name]
     asset = assets[0] if len(assets) == 1 else {}
     digest, size = _DIGEST.fullmatch(str(asset.get("digest"))), asset.get("size")
-    if (not digest or asset.get("state") != "uploaded" or type(size) is not int or not 0 < size <= MAX_ADDON
+    if type(size) is int and size > MAX_ADDON:
+        raise RenoDXError(f"{name} is {size >> 20} MB, more than the {MAX_ADDON >> 20} MB a RenoDX mod may have here; "
+                          "install the mod by hand.")
+    if (not digest or asset.get("state") != "uploaded" or type(size) is not int or not 0 < size
             or str(asset.get("browser_download_url")).lower() != url.lower()):
         raise RenoDXError(f"{name} is not in {author}'s release with a SHA-256 from GitHub; install the mod by hand.")
     return asset["browser_download_url"], size, digest.group(1).lower()
@@ -177,6 +256,11 @@ def download(mod, bits, folder, cancel=None):
     address, size, sha256 = _asset(*found, cancel)
     os.makedirs(folder, exist_ok=True)
     path = os.path.join(folder, found[3])
+    try:  # already the newest snapshot (an engine-wide mod is shared by many games): no second download
+        if dk_fs.sha256_file(path) == sha256 and (pe_info(path) or {}).get("bits") == bits:
+            return path
+    except OSError:
+        pass  # none yet
     new = path + ".new"  # a failed update keeps the copy that worked
     try:
         dk_net.download(address, new, size, sha256, hosts=GITHUB_DOWNLOADS, cancel=cancel)

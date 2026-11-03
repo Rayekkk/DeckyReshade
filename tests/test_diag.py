@@ -34,6 +34,21 @@ class ReshadeLog(unittest.TestCase):
         self.assertEqual(summary["errors"], ['Failed to compile "Z:\\s\\Shaders\\Broken.fx":',
                                              "Failed to create effect runtime."])
 
+    def test_what_autohdr_did_with_the_swap_chain(self):
+        # lines as the add-on writes them (Hollow Knight: HDR; earlier, without EnableHDR: SDR; HDR off in Steam)
+        head = "11:00:00:000 [  320] | INFO  | [AutoHDR] DLL attached\n"
+        on = ("11:00:01:000 [  320] | INFO  | [AutoHDR] [DXGI]: DXGI swapchain colour space "
+              "DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709 set\n")
+        sdr = ("11:00:01:000 [  320] | ERROR | [AutoHDR] [DXGI]: DXGI swapchain colour space "
+               "DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709 (0) not supported\n")
+        none = "11:00:01:000 [  320] | INFO  | [AutoHDR] [DXGI]: Failed as no HDR support\n"
+        for text, want in (("", ""), (head, "off"), (head + sdr, "off"), (head + on + sdr, "on"), (head + none, "no_hdr")):
+            folder = tempfile.mkdtemp()
+            with open(os.path.join(folder, D.LOG), "w", encoding="utf-8") as f:
+                f.write(SAMPLE + text)
+            self.assertEqual(D.reshade_log(folder)["autohdr"], want, text)
+        self.assertEqual(D.reshade_log(tempfile.mkdtemp())["autohdr"], "")
+
     def test_long_log_shows_its_newest_errors(self):
         folder = tempfile.mkdtemp()
         filler = "".join(f"t [1] | INFO  | line {i}\n" for i in range(200))

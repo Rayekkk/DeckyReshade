@@ -25,12 +25,18 @@ All notable changes to DeckyReshade, newest first.
 - Windows shortcuts and emulators work like Steam games.
 
 **AutoHDR**
-- Per game, the AutoHDR add-on and Pumbo's AdvancedAutoHDR, with a first preset.
+- Per game, the AutoHDR add-on (switched on for the game) and Pumbo's AdvancedAutoHDR, with a first
+  preset; a start that stayed in SDR is shown on the game's page and said once.
+- The HDR part of a game's page says when HDR is off in Steam, with a button to the setting.
 
 **RenoDX**
 - Per game, the mod list from the RenoDX wiki with each mod's status (working, in progress), matched to
   the library.
 - Mods are installed and updated from their author's snapshot builds.
+- The engine-wide Unreal Engine and Unity mods for the games their own lists name, with each game's
+  note; ones that need steps the plugin cannot take (a build from Discord, DLSS) are links.
+- An Unreal Engine game whose list asks for Engine.ini gets its HDR lines (read-only) and Upgrade Path
+  Off; turning the mod off puts its Engine.ini back.
 
 **ReShade**
 - The newest version DeckyReshade has checksums for, with automatic updates, or a fixed known version

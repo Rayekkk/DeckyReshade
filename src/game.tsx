@@ -2,16 +2,17 @@
 // Copyright (c) 2026 Rayekkk
 
 // One game: ReShade on or off, AutoHDR, a RenoDX mod, the executable and graphics API, ReShade's log.
-import { DropdownItem, Field, PanelSection, PanelSectionRow, ToggleField } from "@decky/ui";
+import { DropdownItem, Field, Navigation, PanelSection, PanelSectionRow, ToggleField } from "@decky/ui";
 import { FC, ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import {
-  API_LABEL, APIS, DXGI_APIS, GameInfo, getGame, getLogs, getRenodxMods, LogSummary, RENODX_STATUS, renodxBadge, State,
+  API_LABEL, APIS, DXGI_APIS, GameInfo, getGame, getLogs, getRenodxMods, LogSummary, RENODX_STATUS, RenodxMod, renodxBadge,
+  State,
 } from "./api";
 import { settle } from "./result";
 import {
   ago, applyGame, Choice, copyLaunchOptions, errorStyle, keepPage, muted, NAME, okText, panel, pick, showText, warnText,
 } from "./shared";
-import { ActionButton, notify, statusPlaceholder } from "./ui";
+import { ActionButton, colors, notify, statusPlaceholder } from "./ui";
 
 const ANTICHEAT_WARNING = "Anti-cheat detected: ReShade in online games can get you kicked or banned. " +
   "Turning it on is at your own risk.";
@@ -27,6 +28,30 @@ const LastRun: FC<{ log?: LogSummary; enabled: boolean }> = ({ log, enabled }) =
         {log.warnings ? `, ${log.warnings} warning${log.warnings === 1 ? "" : "s"}` : ""}
       </div>
       {log.errors.slice(-2).map((e, i) => <div key={i}>{e}</div>)}
+    </div>
+  );
+};
+
+// What the AutoHDR add-on did in the game's last start (ReShade.log).
+const AUTOHDR_RESULT: Record<string, ReactNode> = {
+  on: <div style={okText}>The last start was in HDR.</div>,
+  off: <div style={warnText}>The last start stayed in SDR: the AutoHDR add-on does not work with every game.</div>,
+  no_hdr: <div style={warnText}>The last start stayed in SDR: HDR is off in Steam's display settings.</div>,
+};
+
+// Steam's own HDR switch (Settings → Display); undefined when this Steam does not say.
+const steamHdr = () => (window as unknown as { settingsStore?: { m_ClientSettings?: { gamescope_hdr_enabled?: boolean } } })
+  .settingsStore?.m_ClientSettings?.gamescope_hdr_enabled;
+
+// What the RenoDX list says about this game (settings for the RenoDX menu, steps, why it does not work), framed in the
+// colour of its status: green working, yellow still being tested, red anything else (broken, abandoned, superseded).
+const NOTE_COLORS = { working: [colors.ok, colors.okSurface], wip: [colors.warning, colors.warningSurface] } as const;
+const ModNote: FC<{ mod: RenodxMod }> = ({ mod }) => {
+  const [line, surface] = NOTE_COLORS[mod.status as keyof typeof NOTE_COLORS] ?? [colors.error, colors.errorSurface];
+  return (
+    <div style={{ border: `1px solid ${line}`, borderRadius: "4px", padding: "6px 8px", marginTop: "6px", background: surface,
+      color: colors.text, fontSize: "12px", overflowWrap: "anywhere" }}>
+      {mod.note}
     </div>
   );
 };
@@ -155,18 +180,30 @@ export const GamePage: FC<{ game: State["games"][number]; state: State; working:
         </PanelSection>
 
         <PanelSection title="HDR">
+          {steamHdr() === false && row(
+            <ActionButton onClick={() => { Navigation.Navigate("/settings/display"); Navigation.CloseSideMenus(); }}
+              description={<span style={warnText}>HDR is off in Steam's display settings; AutoHDR and RenoDX need it on.</span>}>
+              Open display settings
+            </ActionButton>,
+          )}
           {row(
             <ToggleField label="AutoHDR" checked={!!info.autohdr} disabled={busyHere || (!info.autohdr && (!autohdrPossible || renodxOn))}
               description={!addon ? "Needs the add-on build (ReShade version page)."
                 : !DXGI_APIS.includes(effective) ? "Works only with DirectX 10/11/12 games."
                 : renodxOn ? "Off while the RenoDX mod is on: use one or the other."
-                : `Turns SDR into HDR on HDR screens; turn on HDR in Steam's display settings too.${state.reshade.autohdr_ready ? "" : " Downloads the add-on first (about 150 KB)."}`}
+                : <>
+                  {info.autohdr && info.log?.found && AUTOHDR_RESULT[info.log.autohdr ?? ""]}
+                  <div>Turns SDR into HDR on HDR screens.{state.reshade.autohdr_ready ? "" : " Downloads the add-on first (about 150 KB)."}</div>
+                </>}
               onChange={on => info.enabled ? apply(true, { autohdr: on }) : setInfo({ ...info, autohdr: on })} />,
           )}
           {row(
             <Field label="RenoDX mod" description={mod ? <>
-              <div style={mod.status === "working" ? okText : warnText}>{RENODX_STATUS[mod.status] ?? (mod.note || "See the mod's page for its status.")}</div>
-              <div>{mod.name} · by {mod.maintainer}{mod.status !== "other" && mod.note ? ` · ${mod.note}` : ""}</div>
+              <div style={mod.status === "working" ? okText : mod.status === "wip" ? warnText : errorStyle}>
+                {RENODX_STATUS[mod.status] ?? (mod.note ? "Not marked working in the RenoDX list." : "See the mod's page for its status.")}
+              </div>
+              <div>{mod.name} · by {mod.maintainer}</div>
+              {mod.note && <ModNote mod={mod} />}
             </> : state.renodx.count ? "No RenoDX mod in the list matches this game; you can pick one below."
               : "The RenoDX list is not loaded yet (ReShade version page → Refresh RenoDX list)."} />,
           )}
@@ -177,8 +214,11 @@ export const GamePage: FC<{ game: State["games"][number]; state: State; working:
                 : info.autohdr ? "Off while AutoHDR is on: use one or the other."
                 : !renodx ? "Pick a mod below."
                 : mod && !modFits ? (mod.files.length ? `This mod is only ${mod.files.map(b => `${b}-bit`).join(" and ")}; the executable is ${info.bits}-bit.`
+                  : mod.engine ? `Not installable from here: the ${mod.engine} mod needs steps for this game that DeckyReshade cannot take (see the note), or is not marked working yet; install it by hand: ${mod.page}`
                   : `Not installable from here (only on Nexus Mods or Discord, or from an author DeckyReshade does not know yet); install it by hand: ${mod.page}`)
-                : `Downloads the mod from ${mod?.host || "its author"} and puts it next to ReShade; turn on HDR in Steam's display settings.`}
+                : mod?.engine_ini ? `Downloads the ${mod.engine} mod from ${mod.host || "its author"}, turns on HDR in the game's Engine.ini (read-only, as the RenoDX list asks) and sets Upgrade Path to Off; turning the mod off puts both back. Start the game once before, so it makes its settings folder.`
+                : mod?.engine ? `Downloads the ${mod.engine} mod from ${mod.host || "its author"}: made for the whole engine and tried on this game by its users.${mod.settings ? " Sets Upgrade Path to Off, as the RenoDX list asks." : " A setting the note names goes in the RenoDX menu in ReShade (Home)."}`
+                : `Downloads the mod from ${mod?.host || "its author"} and puts it next to ReShade. If the game has its own HDR setting, turn it on there.`}
               onChange={on => apply(on || !!info.enabled, { renodx: on ? renodx : "" })} />,
           )}
           {renodxOn && row(

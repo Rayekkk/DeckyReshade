@@ -138,6 +138,92 @@ def _file(path, data):
     return path
 
 
+class AutoHdrSwitch(unittest.TestCase):
+    def test_the_add_on_is_switched_on_in_reshade_ini(self):
+        new = I.with_hdr(I.ini_text("/s"))
+        self.assertTrue(new.endswith("TutorialProgress=4\n\n[HDR]\nEnableHDR=1\n"), new)
+        self.assertEqual(I.with_hdr(new), new)  # once
+        # turned off in ReShade's add-on tab, or with the user's own HDR10 choice: on again, the rest stays
+        mine = "[GENERAL]\nPreset=x\n[HDR]\nUseHDR10=1\nEnableHDR=0\n[INPUT]\nKeyOverlay=36\n"
+        self.assertEqual(I.with_hdr(mine), "[GENERAL]\nPreset=x\n[HDR]\nUseHDR10=1\nEnableHDR=1\n[INPUT]\nKeyOverlay=36\n")
+        self.assertEqual(I.with_hdr("[HDR]\n[X]\n"), "[HDR]\nEnableHDR=1\n[X]\n")
+
+
+class UnrealEngineIni(unittest.TestCase):
+    VALUES = {"SystemSettings": {"r.AllowHDR": "1", "r.HDR.EnableHDROutput": "1"},
+              "/Script/Engine.RendererSettings": {"r.LUT.UpdateEveryFrame": "1"}}
+
+    def setUp(self):
+        base = tempfile.mkdtemp()
+        self.manifest = I.Manifest(os.path.join(base, "manifest.json"))
+        self.install_dir = os.path.join(base, "common", "Satisfactory")
+        # Satisfactory: the exe in Engine/Binaries, the project beside it
+        self.exe = "Engine/Binaries/Win64/FactoryGameSteam-Win64-Shipping.exe"
+        _file(os.path.join(self.install_dir, self.exe), b"exe")
+        for sub in ("Binaries", "Content"):
+            os.makedirs(os.path.join(self.install_dir, "FactoryGame", sub))
+        self.prefix = os.path.join(base, "compatdata", "526870")
+        self.config = os.path.join(self.prefix, "pfx", "drive_c", "users", "steamuser", "AppData", "Local",
+                                   "FactoryGame", "Saved", "Config", "Windows")
+        self.src = {"dxgi.dll": _file(os.path.join(base, "data", "ReShade64.dll"), b"reshade"),
+                    "renodx-ue-extended.addon64": _file(os.path.join(base, "data", "ue.addon64"), b"addon")}
+        self.game = {"appid": 526870, "name": "Satisfactory", "install_dir": self.install_dir}
+
+    def enable(self):
+        I.enable(self.manifest, self.game, self.exe, "dxgi", 64, self.src, os.path.join(self.install_dir, "s"),
+                 settings={"renodx": {"Set_Path": "0"}},
+                 engine_ini={"path": I.engine_ini_path(self.prefix, "FactoryGame"), "values": self.VALUES})
+
+    def test_where_the_project_and_its_engine_ini_are(self):
+        self.assertEqual(I.unreal_project(self.install_dir, self.exe), "FactoryGame")
+        self.assertEqual(I.unreal_project(self.install_dir, "Game/Binaries/Win64/Game.exe"), "Game")
+        os.makedirs(os.path.join(self.install_dir, "Other", "Binaries"))
+        os.makedirs(os.path.join(self.install_dir, "Other", "Content"))
+        self.assertEqual(I.unreal_project(self.install_dir, self.exe), "", "two projects: unclear")
+        self.assertEqual(I.engine_ini_path(self.prefix, "FactoryGame"), "", "not started yet")
+        os.makedirs(self.config.replace("Windows", "WindowsNoEditor"))  # Unreal Engine 4
+        self.assertTrue(I.engine_ini_path(self.prefix, "FactoryGame").endswith(os.path.join("WindowsNoEditor", "Engine.ini")))
+
+    def test_the_games_own_engine_ini_comes_back_exactly(self):
+        own = b"[Core.System]\r\nPaths=../../..\r\n\r\n[SystemSettings]\r\nr.AllowHDR=0\r\n"
+        ini = _file(os.path.join(self.config, "Engine.ini"), own)
+        self.enable()
+        with open(ini, "rb") as f:
+            text = f.read().decode()
+        self.assertIn("[SystemSettings]\r\nr.HDR.EnableHDROutput=1\r\nr.AllowHDR=1\r\n", text)
+        self.assertIn("[/Script/Engine.RendererSettings]\r\nr.LUT.UpdateEveryFrame=1", text)
+        self.assertIn("Paths=../../..", text)
+        self.assertFalse(os.access(ini, os.W_OK), "read-only, as the RenoDX list asks")
+        with open(os.path.join(self.install_dir, "Engine", "Binaries", "Win64", I.INI)) as f:
+            self.assertIn("[renodx]\nSet_Path=0\n", f.read())
+        self.enable()  # again: still one backup, still our values
+        self.assertEqual(I.disable(self.manifest, 526870), [])
+        with open(ini, "rb") as f:
+            self.assertEqual(f.read(), own)
+        self.assertTrue(os.access(ini, os.W_OK))
+        self.assertEqual(sorted(os.listdir(self.config)), ["Engine.ini"])
+
+    def test_an_engine_ini_made_here_goes_and_one_changed_since_stays(self):
+        os.makedirs(self.config)
+        self.enable()
+        ini = os.path.join(self.config, "Engine.ini")
+        self.assertTrue(os.path.isfile(ini))
+        I.disable(self.manifest, 526870)
+        self.assertEqual(os.listdir(self.config), [])
+        _file(ini, b"[SystemSettings]\n")
+        self.enable()
+        os.chmod(ini, 0o644)
+        _file(ini, b"[SystemSettings]\nr.Mine=1\n")  # the user's edit
+        self.assertEqual(I.disable(self.manifest, 526870), ["Engine.ini"])
+        with open(ini, "rb") as f:
+            self.assertEqual(f.read(), b"[SystemSettings]\nr.Mine=1\n")
+
+    def test_values_go_into_their_sections(self):
+        self.assertEqual(I.with_values("[A]\nx=1\n[b]\ny=2\n", {"B": {"Y": "3", "z": "4"}, "C": {"w": "5"}}),
+                         "[A]\nx=1\n[b]\nz=4\nY=3\n\n[C]\nw=5\n")
+        self.assertEqual(I.with_values("", {"C": {"w": "5"}}), "[C]\nw=5\n")
+
+
 class InstallRollback(unittest.TestCase):
     def setUp(self):
         base = tempfile.mkdtemp()
@@ -204,9 +290,11 @@ class InstallRollback(unittest.TestCase):
 
         def enable():
             I.enable(self.manifest, self.game, "bin/game.exe", "dxgi", 64, src, self.shaders,
-                     preset=I.autohdr_preset())
+                     preset=I.autohdr_preset(), hdr=True)
 
         enable()
+        with open(os.path.join(self.target, I.INI)) as f:
+            self.assertIn("[HDR]\nEnableHDR=1\n", f.read())
         with open(os.path.join(self.target, I.PRESET)) as f:
             self.assertIn("AdvancedAutoHDR@AdvancedAutoHDR.fx", f.read())
         I.disable(self.manifest, 7)

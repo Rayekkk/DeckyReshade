@@ -122,16 +122,27 @@ Changing anything while ReShade is on sets the game up again with the new choice
 
 ### HDR: AutoHDR and RenoDX
 
-- **AutoHDR** adds the [AutoHDR add-on](https://github.com/EndlesslyFlowering/AutoHDR-ReShade) and turns on
-  [Pumbo's AdvancedAutoHDR](https://github.com/Filoppi/PumboAutoHDR) in a first preset (only when the game has no
-  preset yet). Fine-tune it in ReShade's menu.
+- **AutoHDR** adds the [AutoHDR add-on](https://github.com/EndlesslyFlowering/AutoHDR-ReShade), switches it on in
+  `ReShade.ini` (`[HDR] EnableHDR=1`) and turns on [Pumbo's AdvancedAutoHDR](https://github.com/Filoppi/PumboAutoHDR)
+  in a first preset (only when the game has no preset yet). Fine-tune it in ReShade's menu. The add-on does not work
+  with every game (Cult of the Lamb stays in SDR): after a start that stayed in SDR, the game's page and a message say
+  so.
 - **RenoDX** mods rebuild a game's tone mapping for real HDR. The list comes from the
   [RenoDX wiki](https://github.com/clshortfuse/renodx/wiki/Mods) and is refreshed once a day. A mod is installed
   only from the GitHub release of a RenoDX author DeckyReshade knows, and only when it matches the checksum GitHub
   publishes for it; mods only on Nexus Mods or Discord, or from another author, show their link to install by hand.
-  Engine-wide mods (Unreal, Unity, Source) need per-game tweaks and are not offered.
-- Both need HDR turned on in Steam's display settings (Steam then gives games HDR output). Use one or the other:
-  together they tone-map twice.
+  The engine-wide mods for Unreal Engine (the Extended one first) and Unity are offered only for the games their own
+  tables list, with the table's note (often a setting for the RenoDX menu). A game's own mod comes first when it can
+  be installed from here. For an Unreal Engine Extended game whose note is "Engine.ini", DeckyReshade also adds the
+  HDR lines the wiki gives to the game's `Engine.ini` in its prefix (or only the ones its note names), makes the file
+  read-only as the wiki asks and sets the mod's Upgrade Path to Off; turning the mod off puts the file back as it was
+  (the game must have been started once, so its settings folder exists). A note saying "Upgrade Path: Off" gets that
+  setting too. One that is not marked working, or whose note asks for a build from Discord or DLSS changes, is a link
+  to install by hand. The Source Engine mod needs a DXVK proxy and is not offered.
+- Both need HDR turned on in Steam's display settings (Steam then gives games HDR output); the HDR part of a game's
+  page says when it is off, with a button to the setting. A RenoDX mod for a game with its own HDR setting also
+  needs that setting on in the game. Use one or the other: together they tone-map twice, so each switch is off while
+  the other is on.
 
 ### Shaders
 
@@ -182,6 +193,7 @@ its line, and **Copy launch options** on the game's page copies it again.
 | "…already exists in the game folder and is not ours" | Another ReShade or a mod uses the same file name; the plugin leaves it alone |
 | "The game's folder is not available" | Its SD card is out; put it back and try again |
 | Washed-out or too bright HDR | Turn on HDR in Steam's display settings, and use AutoHDR or RenoDX, not both |
+| "AutoHDR could not switch … to HDR" | The AutoHDR add-on does not work with this game; turn AutoHDR off for it, or use a RenoDX mod if there is one |
 | "Could not check for a new ReShade" | reshade.me is unreachable; games keep their ReShade, it checks again tomorrow |
 
 **Reporting a problem:** **Troubleshooting → Save report to Downloads** saves the plugin log, settings and every

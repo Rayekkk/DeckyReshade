@@ -12,6 +12,7 @@ import re
 import shutil
 import tempfile
 import threading
+import time
 import unittest
 from unittest import mock
 
@@ -302,6 +303,60 @@ class Games(Base):
             self.assertTrue((await p.enable_game(self.emu_appid, "eden.exe", "opengl32", False, ""))["ok"])
             self.assertNotIn("wine", p.manifest.entries[self.emu_appid])
             self.assertTrue((await p.disable_game(self.emu_appid))["ok"])
+        self.run_async(flow())
+
+    def test_autohdr_left_in_sdr_is_said_once(self):
+        async def flow():
+            p = await self.start(setup=True, autohdr=True)
+            await p.enable_game(70, "Game.exe", "dxgi", True, "")
+            with open(os.path.join(self.game_dir, "ReShade.ini")) as f:
+                self.assertIn("[HDR]\nEnableHDR=1", f.read())
+            warnings = []
+            for _ in range(2):
+                await p.session_started(70)
+                with open(os.path.join(self.game_dir, "ReShade.log"), "w") as f:
+                    f.write("11:00:00:000 [  320] | INFO  | [AutoHDR] DLL attached\n")  # but never switched to HDR
+                warnings.append((await p.session_ended(70)).get("warning", ""))
+            self.assertIn("AutoHDR could not switch God of War to HDR", warnings[0])
+            self.assertEqual(warnings[1], "")
+        self.run_async(flow())
+
+    def test_an_unreal_engine_mod_gets_the_engine_ini_its_list_asks_for(self):
+        async def flow():
+            p = await self.start(setup=True)
+            ue = {**p._mod("God of War (2018)"), "name": "God of War (Unreal Engine Extended)",
+                  "engine_ini": {"SystemSettings": {"r.HDR.EnableHDROutput": "1"}},
+                  "settings": {"renodx": {"Set_Path": "0"}}}
+            p.renodx["mods"].append(ue)
+            r = await p.enable_game(70, "Game.exe", "dxgi", False, ue["name"])
+            self.assertIn("Unreal Engine folders are not where", r["error"])
+            for sub in ("Binaries", "Content"):
+                os.makedirs(os.path.join(self.game_dir, "GoW", sub))
+            r = await p.enable_game(70, "Game.exe", "dxgi", False, ue["name"])
+            self.assertIn("Start the game once first", r["error"])
+            compat = os.path.join(main._steam_root(), "steamapps", "compatdata", "70")
+            config = os.path.join(compat, "pfx", "drive_c", "users", "steamuser", "AppData", "Local", "GoW", "Saved",
+                                  "Config", "Windows")
+            os.makedirs(config)
+            with open(os.path.join(compat, "pfx", "user.reg"), "w") as f:
+                f.write("WINE REGISTRY Version 2\n")
+            self.assertTrue((await p.enable_game(70, "Game.exe", "dxgi", False, ue["name"]))["ok"])
+            with open(os.path.join(config, "Engine.ini")) as f:
+                self.assertEqual(f.read(), "[SystemSettings]\nr.HDR.EnableHDROutput=1\n")
+            with open(os.path.join(self.game_dir, "ReShade.ini")) as f:
+                self.assertIn("[renodx]\nSet_Path=0", f.read())
+            self.assertEqual(await p.disable_game(70), {"ok": True, "kept": []})
+            self.assertEqual(os.listdir(config), [], "made here, so gone again")
+        self.run_async(flow())
+
+    def test_a_renodx_list_saved_before_engine_mods_is_fetched_again(self):
+        async def flow():
+            os.makedirs(decky.DECKY_PLUGIN_RUNTIME_DIR, exist_ok=True)
+            with open(os.path.join(decky.DECKY_PLUGIN_RUNTIME_DIR, "renodx.json"), "w") as f:
+                f.write(f'{{"mods": [], "fetched_at": {time.time()}, "error": ""}}')  # fresh, but the old format
+            p = await self.start()
+            self.assertTrue((await p.get_state())["state"]["renodx"]["count"])
+            self.assertEqual(p.renodx["format"], main.RENODX_FORMAT)
         self.run_async(flow())
 
     def test_two_sessions_without_reshade_warn_the_user(self):

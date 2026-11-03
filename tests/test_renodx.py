@@ -17,7 +17,7 @@ from _pe import make_pe
 
 SNAP = "[![Snapshot](https://img.shields.io/github/last-commit/x/renodx?path=src&label=Snapshot)]"
 NEXUS = "[![Nexus Mods](https://img.shields.io/static/v1?label=Nexus)](https://www.nexusmods.com/game/mods/1)"
-# The wiki's layout, trimmed: legend, the main list, then multi-game mods that are not read.
+# The wiki's layout, trimmed: legend, the main list, then the engine-wide mods with their own per-game tables.
 WIKI = f"""# Installation
 Install ReShade with add-on support.
 
@@ -38,7 +38,52 @@ Install ReShade with add-on support.
 
 ## Multi-Game Mods
 
-| Some Unity Game | x | {SNAP}(https://notvoosh.github.io/renodx-unity/renodx-unityengine.addon64) | :white_check_mark: |
+### Unreal Engine Extended {SNAP}(https://marat569.github.io/renodx/renodx-ue-extended.addon64)
+
+> **Set `Upgrade Path: Off` before editing Engine.ini.**
+
+| Name | Status | Notes |
+| :--- | :---: | :--- |
+| ABZÛ | :white_check_mark: | Upgrade Path: On <br> `B8G8R8A8_TYPELESS` `Output Size` |
+| Bodycam | :white_check_mark: | Engine.ini |
+| A Way Out | :construction: | Upgrade Path: On. Lacks testing.
+| A Plague Tale: Requiem | :white_check_mark: | Native HDR |
+| Black Myth: Wukong | :white_check_mark: | Engine.ini, Only add `r.HDR.EnableHDROutput=1` to Engine.ini. |
+| Hi-Fi Rush | :white_check_mark: | Upgrade Path: On as Engine.ini edits overexposed the shading. |
+| Chromatic Conundrum | :white_check_mark: | Upgrade Path: Off. Broken rendering when enabled. |
+
+ ### Unreal Engine {SNAP}(https://clshortfuse.github.io/renodx/renodx-unrealengine.addon64)
+
+| Name | Status | Notes |
+| :--- | :---: | :--- |
+| ABZÛ | :white_check_mark: | |
+| Bodycam | :white_check_mark: | `R10G10B10A2_UNORM` `Output Size` |
+| Hogwarts Legacy | :white_check_mark: | Needs a build from the [Discord](https://discord.gg/x) |
+
+### Unity Engine
+64-bit: {SNAP}(https://notvoosh.github.io/renodx-unity/renodx-unityengine.addon64) | 32-bit: {SNAP}(https://notvoosh.github.io/renodx-unity/renodx-unityengine.addon32)
+
+| Name | Status | Notes |
+| :--- | :---: | :--- |
+| Old Game | :white_check_mark: | Use DX11 |
+| Hollow Knight | :white_check_mark: | |
+
+### Source Engine
+64-bit: {SNAP}(https://github.com/CommandGenius/renodx/releases/download/snapshot/renodx-sourceengine.addon64)
+
+| Name | Status | Notes |
+| :--- | :---: | :--- |
+| Portal 2 | :white_check_mark: | Needs a DXVK proxy |
+
+### Someone's Engine {SNAP}(https://evil.example.com/renodx-anything.addon64)
+
+| Name | Status | Notes |
+| :--- | :---: | :--- |
+| Dishonored | :white_check_mark: | |
+
+# Related Mods
+
+| Not A Game | x | {SNAP}(https://notvoosh.github.io/renodx/renodx-other.addon64) | :white_check_mark: |
 """
 
 
@@ -46,12 +91,59 @@ class Parse(unittest.TestCase):
     def setUp(self):
         self.mods = {m["name"]: m for m in X.parse(WIKI)}
 
-    def test_main_list_only(self):
-        self.assertEqual(list(self.mods), ["God of War (2018)", "Hollow Knight", "Dishonored",
-                                           "A Plague Tale: Requiem", "Shady", "Old Game"])
+    def test_main_list_then_the_engine_mods_games(self):
+        self.assertEqual(list(self.mods), [
+            "God of War (2018)", "Hollow Knight", "Dishonored", "A Plague Tale: Requiem", "Shady", "Old Game",
+            "ABZÛ (Unreal Engine Extended)", "Bodycam (Unreal Engine Extended)", "A Way Out (Unreal Engine Extended)",
+            "A Plague Tale: Requiem (Unreal Engine Extended)", "Black Myth: Wukong (Unreal Engine Extended)",
+            "Hi-Fi Rush (Unreal Engine Extended)", "Chromatic Conundrum (Unreal Engine Extended)",
+            "ABZÛ (Unreal Engine)", "Bodycam (Unreal Engine)",
+            "Hogwarts Legacy (Unreal Engine)", "Old Game (Unity Engine)", "Hollow Knight (Unity Engine)"])
+
+    def test_an_engine_mod_installs_only_where_its_table_asks_for_nothing_more(self):
+        m = self.mods
+        ue = {"64": "https://marat569.github.io/renodx/renodx-ue-extended.addon64"}
+        abzu = m["ABZÛ (Unreal Engine Extended)"]
+        self.assertEqual((abzu["status"], abzu["files"], abzu["maintainer"], abzu["engine"]),
+                         ("working", ue, "marat569", "Unreal Engine Extended"))
+        # its settings for the RenoDX menu are shown, as plain text
+        self.assertEqual(abzu["note"], "Upgrade Path: On B8G8R8A8_TYPELESS Output Size")
+        self.assertEqual(m["ABZÛ (Unreal Engine)"]["note"], "")
+        # the Engine.ini edit the wiki spells out is done here, with Upgrade Path Off as it asks
+        bodycam = m["Bodycam (Unreal Engine Extended)"]
+        self.assertEqual((bodycam["files"], bodycam["engine_ini"], bodycam["settings"]),
+                         (ue, X.ENGINE_INI, {"renodx": {"Set_Path": "0"}}))
+        self.assertEqual(m["Black Myth: Wukong (Unreal Engine Extended)"]["engine_ini"],
+                         {"SystemSettings": {"r.HDR.EnableHDROutput": "1"}}, "only what the note names")
+        # a note that only mentions Engine.ini (to say it did not work) is no Engine.ini game
+        hifi = m["Hi-Fi Rush (Unreal Engine Extended)"]
+        self.assertEqual(("engine_ini" in hifi, "settings" in hifi, hifi["files"]), (False, False, {}))
+        self.assertEqual(m["Chromatic Conundrum (Unreal Engine Extended)"]["settings"], {"renodx": {"Set_Path": "0"}})
+        self.assertNotIn("engine_ini", abzu)
+        self.assertEqual(m["A Way Out (Unreal Engine Extended)"]["files"], {}, "not marked working")
+        self.assertEqual(m["Hogwarts Legacy (Unreal Engine)"]["files"], {}, "a build from Discord")
+        self.assertEqual(m["Bodycam (Unreal Engine)"]["files"],
+                         {"64": "https://clshortfuse.github.io/renodx/renodx-unrealengine.addon64"})
+        self.assertEqual(sorted(m["Old Game (Unity Engine)"]["files"]), ["32", "64"])
+        self.assertEqual(m["Bodycam (Unreal Engine Extended)"]["page"], X.WIKI_PAGE)
+
+    def test_match_prefers_what_can_be_installed(self):
+        mods = list(self.mods.values())
+        cases = {
+            "Hollow Knight": "Hollow Knight",  # its own mod, installable, over the engine one
+            "Old Game": "Old Game (Unity Engine)",  # its own mod says it was superseded and has no file
+            "A Plague Tale: Requiem": "A Plague Tale: Requiem (Unreal Engine Extended)",  # its own is on Nexus only
+            "ABZÛ": "ABZÛ (Unreal Engine Extended)",  # both Unreal tables: the Extended rework first
+            "Bodycam": "Bodycam (Unreal Engine Extended)",  # its Engine.ini is set up here
+            "Hogwarts Legacy": "Hogwarts Legacy (Unreal Engine)",  # none installable: still shown, as a link
+            "Portal 2": None,  # the Source Engine mod is not offered
+        }
+        for game, want in cases.items():
+            found = X.match(game, mods)
+            self.assertEqual(found and found["name"], want, game)
 
     def test_status_note_files_and_page(self):
-        gow, hk, dis, apt, shady, old = self.mods.values()
+        gow, hk, dis, apt, shady, old = list(self.mods.values())[:6]
         self.assertEqual((gow["status"], gow["files"]),
                          ("working", {"64": "https://clshortfuse.github.io/renodx/renodx-godofwar.addon64"}))
         self.assertEqual((hk["status"], hk["note"], hk["maintainer"]), ("wip", "Currently broken", "Voosh"))
@@ -148,6 +240,21 @@ class Download(unittest.TestCase):
                           False))
         self.assertEqual(url, "https://github.com/clshortfuse/renodx/releases/download/snapshot/renodx-godofwar.addon64")
         self.assertEqual(kw["hosts"], X.GITHUB_DOWNLOADS)
+
+    def test_the_newest_snapshot_already_here_is_not_downloaded_again(self):
+        with GitHub(make_pe(64)) as github:
+            first = X.download(self.gow, 64, self.folder)
+            self.assertEqual(X.download(self.gow, 64, self.folder), first)
+        self.assertEqual([c[0] for c in github.calls], ["get", "download", "get"])
+        with GitHub(make_pe(64, [], b"a newer snapshot")) as github:  # changed on GitHub: fetched
+            X.download(self.gow, 64, self.folder)
+        self.assertEqual([c[0] for c in github.calls], ["get", "download"])
+
+    def test_a_large_engine_wide_mod_is_allowed_but_not_without_limit(self):
+        with GitHub(make_pe(64), size=X.MAX_ADDON + 1):
+            with self.assertRaisesRegex(X.RenoDXError, "more than the 256 MB"):
+                X.download(self.gow, 64, self.folder)
+        self.assertGreaterEqual(X.MAX_ADDON, 110 << 20, "the Unity engine-wide mod is about 105 MB")
 
     def test_a_file_that_does_not_match_its_sum_is_refused_and_not_kept(self):
         with GitHub(make_pe(64), served=make_pe(64, [], b"tampered")):
