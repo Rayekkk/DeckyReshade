@@ -43,6 +43,7 @@ update. DeckyReshade does all of that from the Quick Access Menu and keeps track
 | Requirement | Details |
 |---|---|
 | System | SteamOS in Gaming Mode with [Decky Loader](https://decky.xyz) |
+| Tested on | Lenovo Legion Go 2 with SteamOS 3.9.5 and Decky Loader 3.3.1; Steam Deck and other handhelds have not been tested yet |
 | Games | Windows games run through Proton that use DirectX 8, 9, 10, 11, 12 or OpenGL |
 | AutoHDR | The add-on build, a DirectX 10/11/12 game, an HDR screen and HDR turned on in Steam's display settings |
 | RenoDX | The add-on build and a mod in the RenoDX list with a direct download for the game's bitness |
