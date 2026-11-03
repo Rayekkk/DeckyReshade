@@ -122,8 +122,7 @@ def _binary_vdf(data):
 def shortcuts(steam_root):
     """Non-Steam games (Steam shortcuts) that start a Windows .exe through Proton.
 
-    {appid, name, install_dir (the exe's folder), exe (its name), nonsteam: True, launch_options}. Steam keeps a
-    shortcut's launch options in shortcuts.vdf, which is also where the plugin reads the current ones from.
+    {appid, name, install_dir (the exe's folder), exe (its name), nonsteam: True}.
     """
     games = {}
     try:
@@ -143,8 +142,7 @@ def shortcuts(steam_root):
                 continue  # native Linux shortcuts (and Heroic/Lutris launchers) have no Windows exe to put ReShade by
             appid = entry["appid"] & 0xFFFFFFFF
             games[appid] = {"appid": appid, "name": str(entry.get("appname") or os.path.basename(exe)),
-                            "install_dir": os.path.dirname(exe), "exe": os.path.basename(exe), "nonsteam": True,
-                            "launch_options": str(entry.get("launchoptions", ""))}
+                            "install_dir": os.path.dirname(exe), "exe": os.path.basename(exe), "nonsteam": True}
     return list(games.values())
 
 

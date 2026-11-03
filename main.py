@@ -5,8 +5,8 @@
 
 ReShade (reshade_release) and shader packages (reshade_shaders) are downloaded once into the plugin's data folder;
 each game gets the ReShade DLL for its executable and API plus a ReShade.ini pointing at the shared shaders
-(reshade_install). Launch options are applied by the frontend through SteamClient; this backend computes them so
-they can be undone exactly. Long downloads run one at a time as a "job" the panel polls. Every step is logged
+(reshade_install). Launch options are not needed: Proton loads ReShade from the game folder by itself, and the
+APIs it does not cover get a Wine setting in the game's prefix. Long downloads run one at a time as a "job" the panel polls. Every step is logged
 (decky.logger), and reshade_diag turns the logs into what the panel shows when something fails.
 
 Every RPC answers {"ok", "error"?, "state"?, ...} (DeckyKit D2, dk_rpc). A failed job also stays in state.job.error,
@@ -44,12 +44,11 @@ except (OSError, ValueError, KeyError):
     VERSION = "0.0.0"
 REPOSITORY = "Rayekkk/DeckyReshade"
 # addon: ReShade's add-on build (AutoHDR, depth add-ons; ReShade blocks it in online games); version: "latest" (the
-# newest version whose sums the plugin knows, kept up to date) or one of reshade_release.VERSIONS; auto_launch_options:
-# turning a game on also sets its launch options.
-DEFAULT_SETTINGS = {"addon": True, "version": "latest", "auto_launch_options": True}
+# newest version whose sums the plugin knows, kept up to date) or one of reshade_release.VERSIONS; use_launch_options:
+# the user puts ReShade's line into each game's launch options (copied from the panel) and the plugin leaves Wine alone.
+DEFAULT_SETTINGS = {"addon": True, "version": "latest", "use_launch_options": False}
 CHECK_EVERY = 24 * 3600
 AUTOHDR_PACKAGE = "advancedautohdr-by-pumbo"  # the effect that turns SDR into HDR, from ReShade's package list
-AUTOHDR_ENV = ["DXVK_HDR=1"]  # lets the game's swap chain use HDR under Proton (AutoHDR and RenoDX)
 # Failures whose text is written for the user; anything else is shown by its type only (its text may hold a path).
 EXPECTED = (reshade_install.InstallError, reshade_release.ReleaseError, reshade_renodx.RenoDXError,
             reshade_shaders.ShaderError)
@@ -88,17 +87,6 @@ def _read_json(path):
 def _newer(a, b):
     """Whether version a is newer than version b (False when either is missing)."""
     return bool(a and b and reshade_release.version_tuple(a) > reshade_release.version_tuple(b))
-
-
-def _dlo_original(appid):
-    """The launch options Decky Launch Options stores as a game's original ('' when it has none); read only."""
-    try:
-        data = dk_fs.parse_json(dk_fs.read_bytes(os.path.join(_home(), ".dlo", "settings.json")), dk_fs.require_object)
-    except (OSError, ValueError):
-        return ""
-    profile = data.get("profiles", {}).get(str(appid), {}) if isinstance(data.get("profiles"), dict) else {}
-    value = profile.get("originalLaunchOptions") if isinstance(profile, dict) else ""
-    return value if isinstance(value, str) else ""
 
 
 def _load_settings(path):
@@ -215,8 +203,7 @@ class Plugin:
                         "versions": reshade_release.VERSIONS, "autohdr_ready": self._autohdr_ready(packages)},
             "job": dict(self.job),
             "settings": dict(self.settings),
-            "launch_words": {api: reshade_install.launch_word(api) for api in reshade_games.APIS},
-            "autohdr_env": AUTOHDR_ENV,
+            "launch_options": {api: reshade_install.launch_options(api) for api in reshade_games.APIS},
             "renodx": {"count": len(self.renodx.get("mods") or []), "fetched_at": self.renodx.get("fetched_at", 0),
                        "error": self.renodx.get("error", "")},
             "scanned": self.scanned,
@@ -250,7 +237,7 @@ class Plugin:
 
     @rpc
     async def set_setting(self, key: str, value: bool) -> dict:
-        if key not in ("addon", "auto_launch_options") or not isinstance(value, bool):
+        if key not in ("addon", "use_launch_options") or not isinstance(value, bool):
             return dk_rpc.fail("Unknown setting.", self._state())
         try:
             await self._save_settings(**{key: value})
@@ -278,6 +265,15 @@ class Plugin:
         self.games = await asyncio.to_thread(reshade_games.all_games, _steam_root())
         self._match_renodx()
         self.scanned = True
+        if not self.manifest.problem:  # a game moved to another library or uninstalled since it was set up
+            async with self.lock:
+                try:
+                    changed = await asyncio.to_thread(reshade_install.follow_moved, self.manifest, self.games,
+                                                      _steam_root())
+                except (reshade_install.InstallError, OSError) as e:
+                    changed = [f"games set up not checked against the library: {e}"]
+            for change in changed:
+                decky.logger.info(f"library: {change}")
         decky.logger.info(f"library: {len(self.games)} game(s), "
                           f"{sum(1 for g in self.games if g.get('nonsteam'))} of them non-Steam, "
                           f"{len(self.renodx_match)} with a RenoDX mod")
@@ -466,13 +462,6 @@ class Plugin:
     def _game(self, appid):
         return next((g for g in self.games if g["appid"] == appid), None)
 
-    def _current_options(self, game, from_steam):
-        """A shortcut's launch options as Steam stored them (its app details do not carry them reliably)."""
-        if not game.get("nonsteam"):
-            return from_steam
-        fresh = next((g for g in reshade_games.shortcuts(_steam_root()) if g["appid"] == game["appid"]), None)
-        return fresh["launch_options"] if fresh else from_steam
-
     @rpc
     async def get_game(self, appid: int, exe: str = "", renodx: str = "") -> dict:
         """What the panel shows for one game: executables, the chosen one, bitness, API, AutoHDR, the RenoDX mod
@@ -507,14 +496,9 @@ class Plugin:
             log=await asyncio.to_thread(reshade_diag.reshade_log, folder))
 
     @rpc
-    async def enable_game(self, appid: int, exe: str, api: str, autohdr: bool, renodx: str,
-                          launch_options: str, dlo_installed: bool = False) -> dict:
+    async def enable_game(self, appid: int, exe: str, api: str, autohdr: bool, renodx: str) -> dict:
         """Set ReShade up for one game, with AutoHDR or a RenoDX mod (by its name in the list); when it already is
-        with other choices, that is undone first. A RenoDX mod is downloaded again each time (snapshot builds).
-
-        dlo_installed: Decky Launch Options is running. It takes over a game's launch options whenever the game's
-        library page is shown (they become its stored original), so anything written there could not be taken out
-        again; its ReShade tab is used instead and the launch options are left alone."""
+        with other choices, that is undone first. A RenoDX mod is downloaded again each time (snapshot builds)."""
         game = self._game(appid)
         if not game:
             return dk_rpc.fail("Game not found; close and reopen this menu to rescan the library.")
@@ -540,11 +524,13 @@ class Plugin:
         info = await asyncio.to_thread(reshade_games.pe_info, path)
         if not info:
             return dk_rpc.fail("That file is not a Windows executable.")
-        options = await asyncio.to_thread(self._current_options, game, launch_options)
-        # A game Decky Launch Options runs gets its ReShade option there; we only put the files in place.
-        dlo = dlo_installed or reshade_install.dlo_managed(options)
+        prefix = ""
+        if api in reshade_install.WINE_APIS and not self.settings["use_launch_options"]:
+            prefix = await asyncio.to_thread(reshade_install.wine_prefix, game, _steam_root())
+            if not prefix:
+                return dk_rpc.fail("Start the game once first, so Proton makes its Wine prefix; then turn ReShade on.")
         decky.logger.info(f"enable {appid} '{game['name']}': {exe} {info['bits']}-bit api={api} autohdr={autohdr} "
-                          f"renodx={renodx!r} dlo={dlo} options before: {options!r}")
+                          f"renodx={renodx!r} prefix={prefix!r}")
         renodx_file = None
         if mod:  # before the lock: a download must not hold up other games, the report or session checks
             decky.logger.info(f"RenoDX: downloading {mod['files'].get(str(info['bits']))}")
@@ -553,7 +539,7 @@ class Plugin:
                     reshade_renodx.download, mod, info["bits"], self.renodx_root, self.cancel))
             except reshade_renodx.RenoDXError as e:
                 decky.logger.warning(f"enable {appid}: {e}")
-                return dk_rpc.fail(str(e), launch_options=options)
+                return dk_rpc.fail(str(e))
         async with self.lock:
             entry = self.manifest.entries.get(appid)
             try:
@@ -562,40 +548,31 @@ class Plugin:
                 # a renamed RenoDX snapshot counts as a change too, or the old add-on would stay beside the new one
                 if entry and (entry["exe"], entry["api"], bool(entry.get("autohdr")), entry.get("renodx", ""),
                               entry.get("renodx_file")) != (exe, api, bool(autohdr), renodx, renodx_file):
-                    options = (await asyncio.to_thread(reshade_install.disable, self.manifest, appid,
-                                                       options))["launch_options"]
-                options = await asyncio.to_thread(
+                    await asyncio.to_thread(reshade_install.disable, self.manifest, appid)
+                await asyncio.to_thread(
                     reshade_install.enable, self.manifest, game, exe, api, info["bits"],
-                    self._sources(api, info["bits"], autohdr, renodx_file), self.shaders_root, options,
-                    self.settings["auto_launch_options"] and not dlo, AUTOHDR_ENV if autohdr or mod else (),
+                    self._sources(api, info["bits"], autohdr, renodx_file), self.shaders_root, prefix,
                     reshade_install.autohdr_preset() if autohdr else None)
                 self.manifest.entries[appid].update(autohdr=bool(autohdr), renodx=renodx, renodx_file=renodx_file)
                 await asyncio.to_thread(self.manifest.save)
-            # any failure: the panel must still get the options, which a first disable() may already have restored
             except Exception as e:
                 decky.logger.exception(f"enable {appid} failed")
-                return dk_rpc.fail(_message(e), launch_options=options)
-        decky.logger.info(f"enable {appid} done, options after: {options!r}")
-        return dk_rpc.ok(launch_options=options, dlo=dlo)
+                return dk_rpc.fail(_message(e))
+        decky.logger.info(f"enable {appid} done, wine setting: {self.manifest.entries[appid].get('wine')}")
+        return dk_rpc.ok()
 
     @rpc
-    async def disable_game(self, appid: int, launch_options: str) -> dict:
+    async def disable_game(self, appid: int) -> dict:
         if self.manifest.problem:  # what was put where is unknown: nothing is removed blindly
             return dk_rpc.fail(self.manifest.problem)
-        game = self._game(appid)
-        options = await asyncio.to_thread(self._current_options, game, launch_options) if game else launch_options
         async with self.lock:
             try:
-                result = await asyncio.to_thread(reshade_install.disable, self.manifest, appid, options)
-            except Exception as e:  # the game stays set up; Steam's launch options are left as they are
+                kept = await asyncio.to_thread(reshade_install.disable, self.manifest, appid)
+            except Exception as e:  # the game stays set up
                 decky.logger.exception(f"disable {appid} failed")
                 return dk_rpc.fail(_message(e))
-        decky.logger.info(f"disable {appid}: kept={result['kept']} options {options!r} -> {result['launch_options']!r}")
-        left = reshade_install.dlo_leftover(await asyncio.to_thread(_dlo_original, appid))
-        if left:
-            decky.logger.warning(f"disable {appid}: Decky Launch Options still stores {left!r}")
-            result["dlo_leftover"] = left
-        return dk_rpc.ok(**result)
+        decky.logger.info(f"disable {appid}: kept={kept}")
+        return dk_rpc.ok(kept=kept)
 
     @rpc
     async def session_started(self, appid: int) -> dict:
@@ -625,10 +602,12 @@ class Plugin:
         if loaded or entry["missed"] < 2:
             return dk_rpc.ok(managed=True, loaded=loaded)
         decky.logger.warning(f"ReShade did not load in {appid} twice: {entry['exe']} {entry['api']}")
+        how = ("or check that its launch options still have the line DeckyReshade gives" if
+               self.settings["use_launch_options"] else
+               "or turn on \"Use launch options\" in Settings and paste the line it gives into the game's launch options")
         return dk_rpc.ok(managed=True, loaded=False, warning=(
             f"ReShade did not start in {entry['name']} twice in a row. Pick another executable or graphics API "
-            "for it in DeckyReshade, or check that its launch options (or its ReShade choice in Decky Launch Options) "
-            "still set WINEDLLOVERRIDES."))
+            f"for it in DeckyReshade, {how}."))
 
     # ---- logs ----------------------------------------------------------------------------------------------------
 
@@ -658,8 +637,8 @@ class Plugin:
         games = []
         for appid, e in self.manifest.entries.items():
             details = {"appid": appid, "folder": e["target_dir"], "exe": e["exe"], "bits": e["bits"], "api": e["api"],
-                       "env": e.get("env", []), "autohdr": e.get("autohdr", False), "renodx": e.get("renodx", ""),
-                       "files": sorted(e["files"]), "launch options set": e.get("launch_applied"),
+                       "autohdr": e.get("autohdr", False), "renodx": e.get("renodx", ""),
+                       "files": sorted(e["files"]), "wine setting": e.get("wine"),
                        "missed sessions": e.get("missed", 0), "log": reshade_diag.reshade_log(e["target_dir"])}
             games.append((e["name"], details, reshade_diag.tail(os.path.join(e["target_dir"], reshade_install.LOG), 80)))
         text = reshade_diag.report(header, games, reshade_diag.tail(reshade_diag.plugin_log_path(decky), 400))

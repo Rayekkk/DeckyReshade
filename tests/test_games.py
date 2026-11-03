@@ -56,7 +56,7 @@ def _vdf(node):
 
 
 class Shortcuts(unittest.TestCase):
-    def test_windows_shortcuts_with_their_launch_options(self):
+    def test_windows_shortcuts(self):
         steam, games = tempfile.mkdtemp(), tempfile.mkdtemp()
         eden = os.path.join(games, "Eden", "eden.exe")
         _write(eden, make_pe(64))
@@ -70,8 +70,7 @@ class Shortcuts(unittest.TestCase):
         _write(os.path.join(steam, "userdata", "456", "config", "shortcuts.vdf"), b"\x00broken")
         found = G.shortcuts(steam)
         self.assertEqual(found, [{"appid": (-1234567890) & 0xFFFFFFFF, "name": "Eden",
-                                  "install_dir": os.path.dirname(eden), "exe": "eden.exe", "nonsteam": True,
-                                  "launch_options": "-fullscreen"}])
+                                  "install_dir": os.path.dirname(eden), "exe": "eden.exe", "nonsteam": True}])
         # the shortcut's own exe is offered first, even when another one looks more like the game
         _write(os.path.join(games, "Eden", "maintenancetool.exe"), make_pe(64, [], b"\0" * 3_000_000))
         self.assertEqual(G.inspect(found[0])["candidates"][0]["exe"], "eden.exe")

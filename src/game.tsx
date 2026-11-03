@@ -8,7 +8,9 @@ import {
   API_LABEL, APIS, DXGI_APIS, GameInfo, getGame, getLogs, getRenodxMods, LogSummary, RENODX_STATUS, renodxBadge, State,
 } from "./api";
 import { settle } from "./result";
-import { ago, applyGame, dloInstalled, errorStyle, muted, NAME, okText, showText, warnText } from "./shared";
+import {
+  ago, applyGame, Choice, copyLaunchOptions, errorStyle, keepPage, muted, NAME, okText, panel, pick, showText, warnText,
+} from "./shared";
 import { ActionButton, notify, statusPlaceholder } from "./ui";
 
 const ANTICHEAT_WARNING = "Anti-cheat detected: ReShade in online games can get you kicked or banned. " +
@@ -36,27 +38,46 @@ let renodxMods: { name: string; status: string }[] | null = null;
 export const GamePage: FC<{ game: State["games"][number]; state: State; working: boolean; setBusy: (b: boolean) => void;
   refresh: () => void; fail: (why: string) => void }> =
   ({ game, state, working, setBusy, refresh, fail }) => {
+    // what the user chose here, kept while a dropdown menu outside the QAM has the panel unmounted (shared.tsx)
+    const draft = (panel.drafts[game.appid] ??= {});
     const [info, setInfo] = useState<GameInfo | null>(null);
-    const [api, setApi] = useState<string | null>(null); // null: the detected one
+    const [api, setApiRaw] = useState<string | null>(draft.api ?? null); // null: the detected one
+    const setApi = (a: string | null) => { draft.api = a; setApiRaw(a); };
     const [renodx, setRenodx] = useState(""); // the mod chosen for this game, by name
     const [mods, setMods] = useState(renodxMods);
     const [loading, setLoading] = useState(false);
+    const [picks, setPicks] = useState(0);
+    const choose = useRef<((c: Choice) => void) | null>(null);
 
     const wanted = useRef(0); // the newest load; an older one finishing late is dropped
-    const load = useCallback(async (exe = "", renodxName = "") => {
+    // keepApi: the page comes back after a remount, with the API picked before it
+    const load = useCallback(async (exe = "", renodxName = "", keepApi = false) => {
       const ticket = ++wanted.current;
+      Object.assign(draft, { exe, renodx: renodxName });
       setLoading(true);
       const next = await settle(getGame(game.appid, exe, renodxName));
       if (wanted.current !== ticket) return;
       setInfo(next);
       if (next.ok) {
-        setApi(next.enabled ? next.api ?? null : null);
+        setApi(next.enabled ? next.api ?? null : keepApi ? draft.api ?? null : null);
         setRenodx(next.renodx?.installed || renodxName || next.renodx?.auto || "");
       }
       setLoading(false);
     }, [game.appid]);
 
-    useEffect(() => { load(); }, [load]);
+    useEffect(() => { load(draft.exe ?? "", draft.renodx ?? "", true); }, [load]);
+    useEffect(() => {
+      const listener = () => setPicks(n => n + 1);
+      panel.onPick = listener;
+      return () => { if (panel.onPick === listener) panel.onPick = null; };
+    }, []);
+    // a dropdown choice, also one made while this page was unmounted, once the game is loaded
+    useEffect(() => {
+      const chosen = panel.pick;
+      if (!info?.ok || loading || chosen?.appid !== game.appid || !choose.current) return;
+      panel.pick = null;
+      choose.current(chosen.choice);
+    }, [info, loading, picks]);
     useEffect(() => {
       if (!renodxMods && state.renodx.count)
         settle(getRenodxMods()).then(r => { if (r.mods) { renodxMods = r.mods; setMods(r.mods); } });
@@ -88,10 +109,24 @@ export const GamePage: FC<{ game: State["games"][number]; state: State; working:
       const reno = addon ? change.renodx ?? info.renodx?.installed ?? "" : "";
       setBusy(true);
       fail("");
-      fail(await applyGame(game.appid, game.name, game.nonsteam, on, exe, chosen, hdr, reno));
+      const why = await applyGame(game.appid, game.name, on, exe, chosen, hdr, reno);
+      fail(why);
+      // the line to paste changes only with the API: copied when it is new to this game
+      if (!why && on && state.settings.use_launch_options && (!info.enabled || info.api !== chosen))
+        await copyLaunchOptions(game.name, chosen);
       await load(exe);
       setBusy(false);
       refresh();
+    };
+
+    choose.current = c => {
+      // ReShade off: only the page changes, keeping an API picked by hand
+      if (c.exe !== undefined) return void (info.enabled ? apply(true, { exe: c.exe }) : load(c.exe, renodx, true));
+      if (c.renodx !== undefined)
+        return void (renodxOn ? apply(true, { renodx: c.renodx }) : load(info.exe ?? "", c.renodx, true));
+      setApi(c.api ?? null);
+      const next = c.api ?? detected;
+      if (info.enabled && (APIS as readonly string[]).includes(next)) apply(true, { api: next });
     };
 
     const showLog = async () => {
@@ -111,7 +146,12 @@ export const GamePage: FC<{ game: State["games"][number]; state: State; working:
           )}
           {info.anticheat && row(<div style={errorStyle}>{ANTICHEAT_WARNING}</div>)}
           {!info.enabled && row(<div style={muted}>Then restart the game and press Home to open ReShade.</div>)}
-          {dloInstalled() && row(<div style={muted}>Launch options are up to Decky Launch Options: in its ReShade tab, pick this game's graphics API (and ReShade HDR for AutoHDR or RenoDX).</div>)}
+          {state.settings.use_launch_options && supported && row(
+            <ActionButton disabled={busyHere} onClick={() => copyLaunchOptions(game.name, effective)}
+              description={<span style={{ overflowWrap: "anywhere" }}>Add to the game's launch options: {state.launch_options[effective]}</span>}>
+              Copy launch options
+            </ActionButton>,
+          )}
         </PanelSection>
 
         <PanelSection title="HDR">
@@ -120,7 +160,7 @@ export const GamePage: FC<{ game: State["games"][number]; state: State; working:
               description={!addon ? "Needs the add-on build (ReShade version page)."
                 : !DXGI_APIS.includes(effective) ? "Works only with DirectX 10/11/12 games."
                 : renodxOn ? "Off while the RenoDX mod is on: use one or the other."
-                : `Turns SDR into HDR on HDR screens; turn on HDR in Steam's display settings too. Adds ${state.autohdr_env.join(" ")}.${state.reshade.autohdr_ready ? "" : " Downloads the add-on first (about 150 KB)."}`}
+                : `Turns SDR into HDR on HDR screens; turn on HDR in Steam's display settings too.${state.reshade.autohdr_ready ? "" : " Downloads the add-on first (about 150 KB)."}`}
               onChange={on => info.enabled ? apply(true, { autohdr: on }) : setInfo({ ...info, autohdr: on })} />,
           )}
           {row(
@@ -138,7 +178,7 @@ export const GamePage: FC<{ game: State["games"][number]; state: State; working:
                 : !renodx ? "Pick a mod below."
                 : mod && !modFits ? (mod.files.length ? `This mod is only ${mod.files.map(b => `${b}-bit`).join(" and ")}; the executable is ${info.bits}-bit.`
                   : `Not installable from here (only on Nexus Mods or Discord, or from an author DeckyReshade does not know yet); install it by hand: ${mod.page}`)
-                : `Downloads the mod from ${mod?.host || "its author"} and puts it next to ReShade. Adds ${state.autohdr_env.join(" ")}; turn on HDR in Steam's display settings.`}
+                : `Downloads the mod from ${mod?.host || "its author"} and puts it next to ReShade; turn on HDR in Steam's display settings.`}
               onChange={on => apply(on || !!info.enabled, { renodx: on ? renodx : "" })} />,
           )}
           {renodxOn && row(
@@ -150,7 +190,7 @@ export const GamePage: FC<{ game: State["games"][number]; state: State; working:
             <DropdownItem layout="below" childrenContainerWidth="max" label="Another RenoDX mod" disabled={busyHere} selectedOption={renodx || null}
               strDefaultLabel="None" description="Only if the matched one is wrong or none was found."
               rgOptions={mods.map(m => ({ data: m.name, label: `${renodxBadge(m.status)} ${m.name}${m.name === info.renodx?.auto ? " (matched)" : ""}` }))}
-              onChange={o => renodxOn ? apply(true, { renodx: o.data }) : load(info.exe ?? "", o.data)} />,
+              onMenuWillOpen={keepPage} onChange={o => pick(game.appid, { renodx: o.data })} />,
           )}
         </PanelSection>
 
@@ -159,7 +199,7 @@ export const GamePage: FC<{ game: State["games"][number]; state: State; working:
             <DropdownItem layout="below" childrenContainerWidth="max" label="Executable" disabled={busyHere} selectedOption={info.exe}
               description={`${info.bits}-bit. ReShade goes into this file's folder; pick the one that runs the game.`}
               rgOptions={(info.candidates ?? []).map(c => ({ data: c.exe, label: `${c.exe} (${c.bits}-bit)${c.running ? ", running now" : ""}` }))}
-              onChange={o => info.enabled ? apply(true, { exe: o.data }) : load(o.data, renodx)} />,
+              onMenuWillOpen={keepPage} onChange={o => pick(game.appid, { exe: o.data })} />,
           )}
           {row(
             <DropdownItem layout="below" childrenContainerWidth="max" label="Graphics API" disabled={busyHere} selectedOption={api ?? "auto"}
@@ -167,12 +207,7 @@ export const GamePage: FC<{ game: State["games"][number]; state: State; working:
                 : detected === "vulkan" ? "Vulkan games are not supported. If the game also has a DirectX mode, pick that here."
                 : "If ReShade does not appear, try another one; dinput8 works with most games as a last resort."}
               rgOptions={[{ data: "auto", label: `Auto: ${API_LABEL[detected] ?? detected}` }, ...APIS.map(a => ({ data: a, label: API_LABEL[a] }))]}
-              onChange={o => {
-                const chosen = o.data === "auto" ? null : o.data as string;
-                setApi(chosen);
-                const next = chosen ?? detected;
-                if (info.enabled && (APIS as readonly string[]).includes(next)) apply(true, { api: next });
-              }} />,
+              onMenuWillOpen={keepPage} onChange={o => pick(game.appid, { api: o.data === "auto" ? null : o.data as string })} />,
           )}
           {row(
             <ActionButton disabled={!info.log?.found} onClick={showLog}>

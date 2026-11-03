@@ -16,12 +16,16 @@ All notable changes to DeckyReshade, newest first.
 - Set up per game from the Quick Access Menu, starting with the game that is running: ReShade on or off.
 - The executable and graphics API are read from the game itself (32/64-bit, DirectX 8-12, OpenGL,
   dinput8 as a fallback) and can all be changed.
+- A game moved to another library is followed there, and one that was uninstalled leaves the list by
+  itself; a game on an SD card that is out stays set up.
+- A game that ships a shader compiler too old for DirectX 12 effects (Windows 8.1's) gets a newer one;
+  the game's own is kept beside it and put back when ReShade is turned off.
 
 **Non-Steam games**
 - Windows shortcuts and emulators work like Steam games.
 
 **AutoHDR**
-- Per game, the AutoHDR add-on, Pumbo's AdvancedAutoHDR and DXVK_HDR=1, with a first preset.
+- Per game, the AutoHDR add-on and Pumbo's AdvancedAutoHDR, with a first preset.
 
 **RenoDX**
 - Per game, the mod list from the RenoDX wiki with each mod's status (working, in progress), matched to
@@ -33,7 +37,10 @@ All notable changes to DeckyReshade, newest first.
   (6.3.3 to 6.8.0).
 
 **Launch options**
-- Merged with what is already there and restored exactly when ReShade is turned off.
+- None needed: ReShade starts by itself, and OpenGL and Direct3D 10 games get a Wine setting for their
+  executable, removed again with ReShade. Works the same with Decky Launch Options.
+- **Use launch options** in Settings leaves Wine alone instead: turning a game on copies its launch options
+  line, and the game's page has a Copy button.
 
 **Shaders**
 - Packages from ReShade's own list, shared by all games, with updates.
@@ -45,10 +52,6 @@ All notable changes to DeckyReshade, newest first.
 
 **Downloads**
 - Downloaded files can be removed from the panel.
-
-**Decky Launch Options**
-- A ReShade tab (Off or an API per game, AutoHDR) can be added there, and games it runs
-  keep their launch options under its control.
 
 **About**
 - **Use Rayek's store** makes Rayek's store Decky's store channel after you confirm, so Decky's Store tab
@@ -66,6 +69,8 @@ All notable changes to DeckyReshade, newest first.
 - About stays the last row of the main page; on its page the plugin info comes first and Updates at the
   bottom ("Checking GitHub…", "Download 0.2.0", a downloaded update shown as `~/Downloads/…`).
 - B goes back one page instead of closing the menu, and the row you came from is selected again.
+- Picking from a list (executable, graphics API, RenoDX mod, ReShade version) or closing ReShade's log
+  keeps you on the same page, and the choice is applied.
 - When the plugin cannot start, the panel says "DeckyReshade unavailable" with a Try again button, and
   plugin updates are still reachable below it.
 - A game page that cannot be read offers Try again; a game without a Windows executable (a native Linux

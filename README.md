@@ -9,7 +9,7 @@
 [![License](https://img.shields.io/badge/license-BSD--3-424A53?style=for-the-badge&labelColor=141417)](#license)
 
 **ReShade for your Steam and non-Steam games, set up and kept up to date from Gaming Mode.**
-Turn ReShade, AutoHDR or a RenoDX HDR mod on per game from the Quick Access Menu. ReShade, shaders and mods come straight from their authors, launch options are handled for you, and every change can be undone.
+Turn ReShade, AutoHDR or a RenoDX HDR mod on per game from the Quick Access Menu. ReShade, shaders and mods come straight from their authors, no launch options are needed, and every change can be undone.
 
 [Features](#features) · [Requirements](#requirements) · [Installation](#installation) · [Quick start](#quick-start) · [Using the plugin](#using-the-plugin) · [Troubleshooting](#troubleshooting) · [How it works](#how-it-works) · [AI disclaimer](#ai-disclaimer)
 
@@ -32,7 +32,7 @@ update. DeckyReshade does all of that from the Quick Access Menu and keeps track
 | **RenoDX** | Every game in your library that has a [RenoDX](https://github.com/clshortfuse/renodx) HDR mod shows its status (working or in progress); one switch downloads and installs it |
 | **ReShade updates** | The newest ReShade DeckyReshade has checksums for, updated automatically in every game, or a fixed version (6.3.3 to 6.8.0); a newer ReShade on reshade.me is announced and comes with a plugin update |
 | **Shader packages** | The same list ReShade's own installer offers, shared by all games, with updates |
-| **Safe launch options** | `WINEDLLOVERRIDES` entries are merged with what is already there and restored exactly when you turn ReShade off; [Decky Launch Options](https://github.com/Rayekkk/DeckyLaunchOptions) gets its own ReShade tab |
+| **No launch options** | ReShade starts by itself; OpenGL and Direct3D 10 games get a Wine setting for their executable alone, removed again with ReShade. Prefer launch options? **Use launch options** gives every game a Copy button |
 | **Never fails silently** | Each game shows when ReShade last started and its errors; if it did not start twice in a row, you are told what to change |
 | **Logs and report** | ReShade's log per game, the plugin's log, and a one-file report for bug reports |
 | **Clean rollback** | Only files the plugin wrote are removed (checked by SHA-256); your ReShade settings and presets stay (only an AutoHDR starter preset you never changed goes with AutoHDR) |
@@ -81,8 +81,10 @@ set up.
 Open **Games** and press **Turn off ReShade in all games** first: Decky handles a plugin update as uninstall plus
 install, so the plugin never removes anything from games on its own. Then **Troubleshooting → Remove downloaded
 files** deletes ReShade, add-ons and shaders. To clean a game by hand, delete the ReShade DLL (`dxgi.dll`,
-`d3d9.dll`, … next to its executable), `d3dcompiler_47.dll` if the game did not ship one, `AutoHDR.addon*` and
-`renodx-*.addon*`, and remove `WINEDLLOVERRIDES` (and `DXVK_HDR=1`) from its launch options.
+`d3d9.dll`, … next to its executable), `d3dcompiler_47.dll` if the game did not ship one (or rename
+`d3dcompiler_47.dll.deckyreshade-backup` back to it), `AutoHDR.addon*` and `renodx-*.addon*`. An OpenGL or Direct3D 10 game also has a `DllOverrides` key for its executable under
+`Software\Wine\AppDefaults` in its prefix's `user.reg`; launch options you added yourself stay until you remove
+them.
 
 ## Quick start
 
@@ -128,7 +130,8 @@ Changing anything while ReShade is on sets the game up again with the new choice
   only from the GitHub release of a RenoDX author DeckyReshade knows, and only when it matches the checksum GitHub
   publishes for it; mods only on Nexus Mods or Discord, or from another author, show their link to install by hand.
   Engine-wide mods (Unreal, Unity, Source) need per-game tweaks and are not offered.
-- Both add `DXVK_HDR=1` to the launch options. Use one or the other: together they tone-map twice.
+- Both need HDR turned on in Steam's display settings (Steam then gives games HDR output). Use one or the other:
+  together they tone-map twice.
 
 ### Shaders
 
@@ -139,26 +142,28 @@ The standard effects and SweetFX come with setup. Any package from ReShade's own
 
 ### ReShade version
 
-<a href="docs/screenshots/reshade-version.png"><img src="docs/screenshots/reshade-version.png" alt="ReShade version, build and launch options" width="360"></a>
+<a href="docs/screenshots/reshade-version.png"><img src="docs/screenshots/reshade-version.png" alt="ReShade version, build and launch options setting" width="360"></a>
 
 - **Version**: *Latest* is the newest version DeckyReshade has checksums for, and every game gets new versions by
   itself; reshade.me is checked once a day, and a newer ReShade there is announced until a DeckyReshade update brings
   it. A fixed version stays until you change it (6.5.1 is the one to try when a DXVK HDR game breaks ReShade's menu).
 - **Add-on build**: needed for AutoHDR, RenoDX and depth add-ons.
-- **Set launch options automatically** (on by default) puts `WINEDLLOVERRIDES="d3dcompiler_47=n,b;<api>=n,b"` in
-  the game's launch options, next to anything already there; off leaves them to you.
+- **Use launch options** (off by default): see below.
 - **RenoDX mod list**: refresh it by hand.
 
-### Launch options and Decky Launch Options
+### Launch options
 
-A game can have only one `WINEDLLOVERRIDES`: when it already has one (your own overrides, or another tool such as
-[FSR4 Injector](https://github.com/Rayekkk/FSR4Injector)), the plugin adds its entries to it and takes out only
-those when you turn ReShade off. Overrides set outside Steam's launch options are not visible to the plugin.
+DeckyReshade never touches launch options, so it works the same next to your own options and other tools such as
+[Decky Launch Options](https://github.com/Rayekkk/DeckyLaunchOptions). Proton already loads DirectX 9-12 DLLs from
+the game folder first, and Wine does the same for `d3dcompiler_47` and `dinput8`. OpenGL and Direct3D 10 games get
+a Wine setting in their prefix instead, for their executable alone; it is made the first time you turn ReShade on
+and taken out when you turn it off. That needs the game to have been started once (Proton makes its prefix then)
+and to be closed at the time.
 
-With [Decky Launch Options](https://github.com/Rayekkk/DeckyLaunchOptions) installed, it decides the launch
-options: DeckyReshade puts the files in the game and offers DLO a **ReShade** tab (Off or a graphics API per game,
-plus ReShade HDR for AutoHDR and RenoDX) to switch there. Decky Launch Options merges it with your other
-`WINEDLLOVERRIDES`.
+If ReShade does not start in a game this way (for example with `PROTON_USE_WINED3D=1` or your own `dxgi=b`), turn
+on **Use launch options**: the plugin then changes nothing outside the game folder, and you add a line such as
+`WINEDLLOVERRIDES="d3dcompiler_47=n,b;dxgi=n,b" %command%` to the game's launch options. Turning a game on copies
+its line, and **Copy launch options** on the game's page copies it again.
 
 ## Troubleshooting
 
@@ -167,14 +172,15 @@ plus ReShade HDR for AutoHDR and RenoDX) to switch there. Decky Launch Options m
 | What you see | What to do |
 |---|---|
 | "ReShade has not started in this game yet" after playing | Pick the **Executable** marked *running now* while the game runs, or another **Graphics API**; dinput8 works with most games |
-| "ReShade did not start in … twice in a row" | The same, and check the game's launch options (or its choice in Decky Launch Options) still set `WINEDLLOVERRIDES` |
+| "ReShade did not start in … twice in a row" | The same, or turn on **Use launch options** and paste the line into the game's launch options |
+| "Start the game once first…" | An OpenGL or Direct3D 10 game needs its Proton prefix: start the game, quit it, then turn ReShade on |
+| "…close the game first…" | Wine writes its settings back when the game exits; quit the game and try again |
+| "…already has its own Wine setting for…" | Your own Wine setting for that DLL stays; turn on **Use launch options** instead |
 | Errors under "Last start" | **Show ReShade log** names the failing effect; **Update shaders**, or turn that effect off in ReShade |
+| Every effect fails with "unrecognized compiler target 'vs_5_1'" | The game's own shader compiler is too old for DirectX 12: turn ReShade off and on again for the game, and DeckyReshade puts a newer one in (the game's is kept) |
 | "No Windows executable found" | Steam runs the native Linux version; force Proton in the game's compatibility settings |
 | "…already exists in the game folder and is not ours" | Another ReShade or a mod uses the same file name; the plugin leaves it alone |
-| "Steam did not return the launch options" | Nothing was changed; try again |
-| "…quote text with spaces in it…" | Turn off **Set launch options automatically** and add the entries yourself |
 | "The game's folder is not available" | Its SD card is out; put it back and try again |
-| "Decky Launch Options still adds ReShade's WINEDLLOVERRIDES…" | Set ReShade to Off for the game in Decky Launch Options |
 | Washed-out or too bright HDR | Turn on HDR in Steam's display settings, and use AutoHDR or RenoDX, not both |
 | "Could not check for a new ReShade" | reshade.me is unreachable; games keep their ReShade, it checks again tomorrow |
 
@@ -185,7 +191,7 @@ game's ReShade log to one file; attach it with the game and what the page says.
 ## How it works
 
 <details>
-<summary><b>Downloads, game files, launch options and checks</b></summary>
+<summary><b>Downloads, game files, Wine settings and checks</b></summary>
 
 ReShade is not on GitHub. Its homepage links the current installer, and that link is the version check. The
 installer is a ZIP archive behind a Windows program, so the plugin reads `ReShade32.dll` and `ReShade64.dll`
@@ -202,12 +208,22 @@ gives the bitness. The graphics API comes from what it imports: only DirectX 10-
 link OpenGL as a fallback (Unity) and big DirectX 12 games import Direct3D 9 for side jobs, so the DLL names the
 files mention are read too, and the engine DLLs beside an exe that says nothing (Hades).
 
-Next to the executable go ReShade under the API's name, `d3dcompiler_47.dll` for the same bitness (unless the
-game ships its own), the add-ons in use and a `ReShade.ini` pointing at the shared shader folders. Files are only
+Next to the executable go ReShade under the API's name, `d3dcompiler_47.dll` for the same bitness, the add-ons in
+use and a `ReShade.ini` pointing at the shared shader folders. A game that ships its own `d3dcompiler_47.dll` keeps it
+when it can build Shader Model 5.1; an older one (Windows 8.1's, which fails every DirectX 12 effect) is set aside as
+`d3dcompiler_47.dll.deckyreshade-backup` and put back when you turn ReShade off. Files are only
 ever added: a file of the same name that is not ours stops the setup, every file written is recorded with its
 SHA-256 and removed only while it still matches. `ReShade.ini`, your presets and `ReShade.log` stay as your
 settings; the first AutoHDR preset the plugin writes goes with AutoHDR while you have not changed it.
 A ReShade update replaces only the files that still match what was installed.
+
+For OpenGL and Direct3D 10 the plugin adds `"<api>"="native,builtin"` under
+`Software\Wine\AppDefaults\<exe>\DllOverrides` in the prefix's `user.reg`, only while no process runs in
+that prefix, and removes it only while it still has that value; a value you set yourself is never changed.
+
+A game moved to another library (Steam takes ReShade's files along) is followed there when the library is
+scanned, and one that is no longer installed is dropped from the list; a game on an SD card that is out stays set
+up until the card is back.
 
 After each session the plugin checks that ReShade wrote its log during it; a game where it did not twice in a
 row gets a notification. Nothing is installed system-wide and Proton is not modified.
@@ -275,16 +291,17 @@ The AI was used to:
 - build the automated test suites (about 200 tests run on Linux and Windows for every change);
 - audit the code for bugs, security issues and wasted work, with every finding checked by
   independent review passes and, where possible, reproduced before it was fixed;
-- research how ReShade, its installer, AutoHDR, RenoDX and Decky Launch Options work, and write
+- research how ReShade, its installer, AutoHDR, RenoDX and Proton's DLL loading work, and write
   this documentation.
 
 Nothing here is untested AI output. I tested the plugin on my Legion Go 2 in Gaming Mode:
 setup, ReShade in DirectX 11 games with the shaders compiling and the AutoHDR add-on loading,
-RenoDX mod downloads, switching ReShade versions, launch options with and without Decky Launch
-Options, logs and the report, and executable and API detection across a 46-game library.
+ReShade without launch options in DirectX 9, DirectX 11 and OpenGL games, RenoDX mod downloads,
+switching ReShade versions, logs and the report, and executable and API detection across a
+46-game library.
 Features were held back until they behaved correctly on the real device, and a checked SHA-256
 for every DLL and add-on placed in a game folder, and an exact rollback of each game's files and
-launch options, were kept as hard requirements. HDR output and Direct3D 9 games still need more
+Wine settings, were kept as hard requirements. HDR output and Direct3D 9 games still need more
 testing.
 
 Even so, this plugin changes files in your game folders. It is provided as is, without warranty

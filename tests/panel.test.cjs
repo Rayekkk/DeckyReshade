@@ -11,8 +11,9 @@ const state = (over = {}) => ({
   reshade: { installed: '6.8.0', addon: true, latest: '6.8.0', known: '6.8.0', newer_than_known: null,
     update_available: false, check_error: '',
     versions: ['6.8.0', '6.5.1'], autohdr_ready: true },
-  job: { task: '', error: '' }, settings: { addon: true, version: 'latest', auto_launch_options: true },
-  launch_words: { dxgi: 'WINEDLLOVERRIDES="d3dcompiler_47=n,b;dxgi=n,b"' }, autohdr_env: ['DXVK_HDR=1'],
+  job: { task: '', error: '' }, settings: { addon: true, version: 'latest', use_launch_options: false },
+  launch_options: { dxgi: 'WINEDLLOVERRIDES="d3dcompiler_47=n,b;dxgi=n,b" %command%',
+    d3d11: 'WINEDLLOVERRIDES="d3dcompiler_47=n,b;d3d11=n,b" %command%' },
   renodx: { count: 1, fetched_at: 0, error: '' }, scanned: true,
   games: [god, { appid: 80, name: 'Hades', nonsteam: false, renodx: 'wip' }],
   enabled: [{ appid: 70, name: 'God of War', api: 'dxgi', exe: 'GoW.exe', bits: 64, autohdr: false, renodx: 'God of War (2018)' }],
@@ -26,25 +27,27 @@ const gameInfo = (over = {}) => ({
   log: { found: false, modified: 0, version: '', errors: [], warnings: 0 }, ...over,
 });
 
-/** The panel with `running` as Steam's running game (set h.running); Steam answers launch options with -novid. */
+/** The panel with `running` as Steam's running game (set h.running); h.applied: launch options written to Steam
+ * (never), h.copied: text put on the clipboard. */
 function panel(globals = {}, options = {}) {
-  const applied = [], modals = [];
+  const applied = [], modals = [], copied = [];
   const h = harness({
     ...options,
     ui: { Router: { get MainRunningApp() { return h.running; } }, showModal: m => { modals.push(m); } },
     globals: {
       SteamClient: {
         Apps: {
-          RegisterForAppDetails(appid, fn) { Promise.resolve().then(() => fn({ strLaunchOptions: '-novid' })); return { unregister() {} }; },
           SetAppLaunchOptions(appid, value) { applied.push([appid, value]); },
         },
         GameSessions: { RegisterForAppLifetimeNotifications() { return { unregister() {} }; } },
       },
+      navigator: { clipboard: { async writeText(text) { copied.push(text); } } },
       ...globals,
     },
   });
   h.running = null;
   h.applied = applied;
+  h.copied = copied;
   h.modals = modals;
   return h;
 }
@@ -99,6 +102,54 @@ test('Games -> a game page shows where a RenoDX mod comes from before it is inst
   assert.match(String(find(tree, 'ToggleField', 'Use the RenoDX mod').props.description), /clshortfuse\.github\.io/);
 });
 
+test('a dropdown menu outside the QAM: the panel comes back on the game page and takes the choice', async () => {
+  const h = panel();
+  h.running = { appid: 80 };
+  const two = { candidates: [{ exe: 'GoW.exe', bits: 64 }, { exe: 'Launcher.exe', bits: 64 }] };
+  let tree = await open(h, state());
+  find(tree, 'Field', 'This game: Hades').props.onActivate();
+  h.render();
+  h.respond('get_game', gameInfo({ ...two, enabled: false, api: null, renodx: { installed: '', auto: '', mod: null } }));
+  await settle();
+  // ReShade off: an API picked first is kept when the executable is changed through another menu
+  find(h.render(), 'DropdownItem', 'Graphics API').props.onChange({ data: 'd3d11' });
+  h.render();
+  const menu = find(h.render(), 'DropdownItem', 'Executable');
+  let shown = false;
+  menu.props.onMenuWillOpen(() => { shown = true; });
+  assert.ok(shown, 'the menu still opens');
+  h.unmount();  // Decky unmounts the panel while Steam shows the menu
+  menu.props.onChange({ data: 'Launcher.exe' });
+  h.remount();
+  h.respond('get_state', ok(state()));
+  await settle();
+  h.render();
+  h.respond('scan_games', ok(state()));
+  h.respond('get_game', gameInfo({ ...two, enabled: false, api: null, renodx: { installed: '', auto: '', mod: null } }));
+  await settle();
+  tree = h.render();
+  assert.ok(find(tree, 'ToggleField', 'ReShade in this game'), 'back on the game page, not the main page');
+  await settle();
+  h.render();
+  assert.deepEqual(h.calls.filter(c => c.name === 'get_game').map(c => c.args[1]), ['', '', 'Launcher.exe'],
+    'the choice made in the menu loads the other executable');
+  h.respond('get_game', gameInfo({ ...two, exe: 'Launcher.exe', enabled: false, api: null,
+    renodx: { installed: '', auto: '', mod: null } }));
+  await settle();
+  tree = h.render();
+  assert.equal(find(tree, 'DropdownItem', 'Executable').props.selectedOption, 'Launcher.exe');
+  assert.equal(find(tree, 'DropdownItem', 'Graphics API').props.selectedOption, 'd3d11');
+  // a menu left without a choice, then the QAM opened afresh: the main page again
+  find(tree, 'DropdownItem', 'Graphics API').props.onMenuWillOpen(() => {});
+  await open(h, state());
+  h.respond('get_game', gameInfo({ ...two, enabled: false, api: null, renodx: { installed: '', auto: '', mod: null } }));
+  await settle();
+  tree = h.render();
+  assert.ok(find(tree, 'ToggleField', 'ReShade in this game'), 'right after a menu: still the game page');
+  tree = await open(h, state());
+  assert.ok(!find(tree, 'ToggleField', 'ReShade in this game'), 'a fresh open: the main page');
+});
+
 test('a game page: a failed read offers Try again, a game that cannot be supported only says why', async () => {
   const h = panel();
   let tree = await open(h, state());
@@ -132,16 +183,17 @@ test('standard build: what is on can be turned off, and a change drops what cann
   assert.equal(find(tree, 'ToggleField', 'Use the RenoDX mod').props.disabled, false);
   assert.equal(find(tree, 'ToggleField', 'AutoHDR').props.disabled, false);
   find(tree, 'DropdownItem', 'Graphics API').props.onChange({ data: 'd3d11' });
+  h.render();
   await settle();
   const enable = h.calls.find(c => c.name === 'enable_game');
   assert.ok(enable, 'changing the API sets the game up again');
-  assert.deepEqual(enable.args.slice(0, 6), [80, 'GoW.exe', 'd3d11', false, '', '-novid']);
-  h.respond('enable_game', { ok: true, launch_options: 'WINEDLLOVERRIDES=x %command% -novid', dlo: false });
+  assert.deepEqual(enable.args, [80, 'GoW.exe', 'd3d11', false, '']);
+  h.respond('enable_game', { ok: true });
   await settle();
-  assert.deepEqual(h.applied, [[80, 'WINEDLLOVERRIDES=x %command% -novid']]);
+  assert.deepEqual([h.applied, h.copied], [[], []], 'launch options are left alone');
 });
 
-test('a refused change keeps the launch options the backend restored, and says why', async () => {
+test('a refused change says why, also on the page', async () => {
   const h = panel();
   h.running = { appid: 80 };
   let tree = await open(h, state());
@@ -151,9 +203,8 @@ test('a refused change keeps the launch options the backend restored, and says w
   await settle();
   find(h.render(), 'ToggleField', 'ReShade in this game').props.onChange(true);
   await settle();
-  h.respond('enable_game', { ok: false, error: 'dxgi.dll already exists in the game folder', launch_options: '-novid' });
+  h.respond('enable_game', { ok: false, error: 'dxgi.dll already exists in the game folder' });
   await settle();
-  assert.deepEqual(h.applied, [], 'unchanged options are not written');
   assert.deepEqual(h.toasts.map(t => t.body), ['dxgi.dll already exists in the game folder']);
   await settle();
   tree = h.render();
@@ -239,23 +290,36 @@ test('shaders: the package list loads once, after a running job', async () => {
   assert.equal(h.calls.filter(c => c.name === 'load_packages').length, 1, 'once');
 });
 
-test('a game Decky Launch Options runs: its ReShade tab is offered once', async () => {
-  const h = panel({ hasDeckyLaunchOptions: true });
+test('with launch options: turning a game on copies its line once, and the page can copy it again', async () => {
+  const h = panel();
   h.running = { appid: 80 };
-  let tree = await open(h, state());
+  const manual = state({ settings: { ...state().settings, use_launch_options: true } });
+  let tree = await open(h, manual);
   find(tree, 'Field', 'This game: Hades').props.onActivate();
   h.render();
   h.respond('get_game', gameInfo({ enabled: false, renodx: { installed: '', auto: '', mod: null } }));
   await settle();
-  find(h.render(), 'ToggleField', 'ReShade in this game').props.onChange(true);
+  tree = h.render();
+  const line = manual.launch_options.dxgi;
+  assert.ok(findText(tree, line), 'the line is on the page');
+  find(tree, 'ToggleField', 'ReShade in this game').props.onChange(true);
   await settle();
-  const enable = h.calls.find(c => c.name === 'enable_game');
-  assert.equal(enable.args[6], true, 'the backend is told DLO is there');
-  h.respond('enable_game', { ok: true, launch_options: '-novid', dlo: true });
+  h.respond('enable_game', { ok: true });
   await settle();
-  assert.equal(h.events.length, 1);
-  assert.equal(h.events[0].type, 'dlo-add-launch-options');
-  assert.deepEqual(h.events[0].detail.map(o => o.id).slice(0, 2), ['deckyreshade-off', 'deckyreshade-dxgi']);
+  assert.deepEqual(h.copied, [line]);
+  assert.match(h.toasts.at(-1).body, /^Launch options copied/);
+  h.respond('get_game', gameInfo({ renodx: { installed: '', auto: '', mod: null } }));
+  await settle();
+  find(h.render(), 'ToggleField', 'AutoHDR').props.onChange(true);  // same API: nothing new to paste
+  await settle();
+  h.respond('enable_game', { ok: true });
+  await settle();
+  assert.equal(h.copied.length, 1);
+  h.respond('get_game', gameInfo({ autohdr: true, renodx: { installed: '', auto: '', mod: null } }));
+  await settle();
+  click(h.render(), 'Copy launch options');
+  await settle();
+  assert.deepEqual([h.copied.length, h.applied], [2, []]);
 });
 
 test('About is the last row; its page has the plugin info first and Updates last', async () => {

@@ -44,9 +44,8 @@ export interface State {
     update_available: boolean; check_error: string; versions: string[]; autohdr_ready: boolean;
   };
   job: { task: string; error: string };
-  settings: { addon: boolean; version: string; auto_launch_options: boolean };
-  launch_words: Record<string, string>;
-  autohdr_env: string[];
+  settings: { addon: boolean; version: string; use_launch_options: boolean };
+  launch_options: Record<string, string>; // per API: the line the user pastes when use_launch_options is on
   renodx: { count: number; fetched_at: number; error: string };
   scanned: boolean;
   games: { appid: number; name: string; nonsteam: boolean; renodx: string | null }[];
@@ -70,7 +69,7 @@ export interface GameInfo extends Result<never> {
 }
 
 export interface ToggleResult extends Result<never> {
-  launch_options?: string; kept?: string[]; dlo?: boolean; dlo_leftover?: string;
+  kept?: string[];
 }
 
 export const getState = callable<[], Result<State>>("get_state");
@@ -86,8 +85,8 @@ export const updateShaders = callable<[], Result<State>>("update_shaders");
 export const removeData = callable<[], Result<State>>("remove_data");
 export const refreshRenodx = callable<[], Result<State>>("refresh_renodx");
 export const getGame = callable<[number, string, string], GameInfo>("get_game");
-export const enableGame = callable<[number, string, string, boolean, string, string, boolean], ToggleResult>("enable_game");
-export const disableGame = callable<[number, string], ToggleResult>("disable_game");
+export const enableGame = callable<[number, string, string, boolean, string], ToggleResult>("enable_game");
+export const disableGame = callable<[number], ToggleResult>("disable_game");
 export const getRenodxMods = callable<[], Result<never> & { mods?: { name: string; status: string }[] }>("get_renodx_mods");
 export const sessionStarted = callable<[number], Result<never> & { managed?: boolean }>("session_started");
 export const sessionEnded = callable<[number], Result<never> & { managed?: boolean; loaded?: boolean; warning?: string }>("session_ended");

@@ -1,18 +1,48 @@
 // SPDX-License-Identifier: BSD-3-Clause
 // Copyright (c) 2026 Rayekkk
 
-// What every page uses: text styles, launch options, Decky Launch Options, the log dialog and page icons.
+// What every page uses: text styles, turning a game on or off, copying launch options, the log dialog and page icons.
 import { ConfirmModal, Focusable, ScrollPanelGroup, showModal } from "@decky/ui";
 import { ReactNode } from "react";
-import { API_LABEL, APIS, disableGame, enableGame, State, VERSION_NOTE } from "./api";
-import { errorText, settle } from "./result";
+import { disableGame, enableGame, State, VERSION_NOTE } from "./api";
+import { settle } from "./result";
 import { colors, notify } from "./ui";
 
 export const NAME = "DeckyReshade";
 
+// A game's choices made on its page but not applied (ReShade off), and one choice from a dropdown.
+export type Choice = { exe?: string; api?: string | null; renodx?: string };
+
 // Survives the QAM remounting the panel: the last state and a job error the user closed (a new error, a different
-// text, shows again).
-export const panel = { lastState: null as State | null, dismissedError: "" };
+// text, shows again). Steam shows dropdown menus and dialogs outside the QAM, and Decky 3.3.1 unmounts the panel
+// while they are open: with `resume` set (keepPage) the panel comes back on `nav`, the page it showed, with `drafts`,
+// and `pick` takes a dropdown choice made meanwhile to the game page mounted after it.
+export const panel = {
+  lastState: null as State | null, dismissedError: "",
+  nav: null as { page: string | null; gameId: number | null; gameFromList: boolean } | null, resume: false,
+  drafts: {} as Record<number, Choice>,
+  pick: null as { appid: number; choice: Choice } | null, onPick: null as (() => void) | null,
+};
+
+/** Before a dropdown menu or a dialog: the panel comes back on this page. For DropdownItem's onMenuWillOpen. */
+export const keepPage = (show?: () => void) => { panel.resume = true; show?.(); };
+
+/** The page to come back to on the panel's first render, or null when the QAM was opened afresh (drafts go). */
+export const takeResume = () => {
+  const nav = panel.resume ? panel.nav : null;
+  panel.resume = false;
+  if (!nav) {
+    panel.drafts = {};
+    panel.pick = null;
+  }
+  return nav;
+};
+
+/** A game page's dropdown choice, for the page that is mounted now or the one mounted next. */
+export const pick = (appid: number, choice: Choice) => {
+  panel.pick = { appid, choice };
+  panel.onPick?.();
+};
 
 // Text in a row's description; the colors are DeckyKit's one palette (ui.tsx).
 export const muted = { fontSize: "12px", color: colors.muted, overflowWrap: "anywhere" } as const;
@@ -31,93 +61,47 @@ export const ago = (epoch: number) => {
   return `${Math.round(s / 86400)} days ago`;
 };
 
-const unregister = (u: SteamUnregister | undefined) => (typeof u === "function" ? u() : u?.unregister());
-
-// Current launch options straight from Steam. Rejects instead of guessing, so the user's own options are never lost.
-const readLaunchOptions = (appid: number) =>
-  new Promise<string>((resolve, reject) => {
-    let done = false;
-    let reg: SteamUnregister | undefined;
-    const timer = setTimeout(() => {
-      if (!done) { done = true; unregister(reg); reject(new Error("Steam did not return the launch options")); }
-    }, 3000);
-    reg = SteamClient.Apps.RegisterForAppDetails(appid, details => {
-      if (done) return;
-      done = true;
-      clearTimeout(timer);
-      setTimeout(() => unregister(reg), 0);
-      if (typeof details?.strLaunchOptions === "string") resolve(details.strLaunchOptions);
-      else reject(new Error("Steam did not return the launch options"));
-    });
-  });
-
-export const dloInstalled = () => !!(window as unknown as { hasDeckyLaunchOptions?: boolean }).hasDeckyLaunchOptions;
-
-// Decky Launch Options' public integration: a "ReShade" tab with one dropdown, Off or an API, per game, plus AutoHDR's
-// variable. Its runner merges WINEDLLOVERRIDES with the user's other options. Stable ids let a second export replace
-// the first.
-export const exportToDlo = (words: Record<string, string>, autohdrEnv: string[]) =>
-  window.dispatchEvent(new CustomEvent("dlo-add-launch-options", {
-    detail: [
-      { id: "deckyreshade-off", group: "ReShade", name: "ReShade", valueId: "deckyreshade-api", valueName: "Off",
-        on: "", off: "", enableGlobally: false, fallbackValue: true },
-      ...APIS.map(a => ({ id: `deckyreshade-${a}`, group: "ReShade", name: "ReShade", valueId: "deckyreshade-api",
-        valueName: API_LABEL[a], on: words[a], off: "", enableGlobally: false })),
-      { id: "deckyreshade-autohdr", group: "ReShade", name: "ReShade HDR (AutoHDR, RenoDX)", on: autohdrEnv.join(" "),
-        off: "", enableGlobally: false },
-    ],
-  }));
-
-// The first time a game needs it, offer the ReShade tab to Decky Launch Options (it asks the user to confirm); again
-// only when the options change. Browser storage can be missing: then it is offered each time, which is harmless.
-const offerToDlo = () => {
-  const state = panel.lastState;
-  if (!state) return;
-  const key = JSON.stringify([state.launch_words, state.autohdr_env]);
+// The Steam client does not always grant the async clipboard API to plugins; fall back to a selected textarea.
+const copyText = async (text: string) => {
   try {
-    if (localStorage.getItem("deckyreshade-dlo-offered") === key) return;
-    localStorage.setItem("deckyreshade-dlo-offered", key);
+    await navigator.clipboard.writeText(text);
+    return true;
   } catch {
-    // no storage: offer anyway
+    const area = document.createElement("textarea");
+    area.value = text;
+    document.body.appendChild(area);
+    area.select();
+    const ok = document.execCommand("copy");
+    area.remove();
+    return ok;
   }
-  exportToDlo(state.launch_words, state.autohdr_env);
 };
 
-// Turn ReShade on or off for one game and apply the launch options the backend worked out. Returns why it failed
-// (also shown as a toast titled with the game), "" when it worked.
-export const applyGame = async (appid: number, name: string, nonsteam: boolean, on: boolean, exe = "", api = "",
-  autohdr = false, renodx = "") => {
-  let current = "";
-  try {
-    current = await readLaunchOptions(appid);
-  } catch (e) {
-    // a shortcut's options come from shortcuts.vdf in the backend; a Steam game's must never be guessed
-    if (!nonsteam) {
-      const why = `${errorText(e)}. Nothing was changed, so your launch options are kept. Try again.`;
-      notify(name, why);
-      return why;
-    }
-  }
-  const res = await settle(on ? enableGame(appid, exe, api, autohdr, renodx, current, dloInstalled()) : disableGame(appid, current));
-  // also on failure: switching executable or API may have turned the old setup off first
-  if (res.launch_options !== undefined && res.launch_options !== current)
-    SteamClient.Apps.SetAppLaunchOptions(appid, res.launch_options);
+// With "Use launch options" the user pastes ReShade's line into the game's launch options; this copies it.
+export const copyLaunchOptions = async (name: string, api: string) => {
+  const line = panel.lastState?.launch_options[api];
+  if (!line) return;
+  notify(name, await copyText(line)
+    ? "Launch options copied. Paste them in the game's Properties → General → Launch options."
+    : `Could not copy. Add this to the game's launch options: ${line}`);
+};
+
+// Turn ReShade on or off for one game. Returns why it failed (also shown as a toast titled with the game), "" when
+// it worked.
+export const applyGame = async (appid: number, name: string, on: boolean, exe = "", api = "", autohdr = false,
+  renodx = "") => {
+  const res = await settle(on ? enableGame(appid, exe, api, autohdr, renodx) : disableGame(appid));
   if (!res.ok) {
     notify(name, res.error ?? "Failed");
     return res.error ?? "Failed";
   }
   if (res.kept?.length) notify(name, `Left files you changed in place: ${res.kept.join(", ")}.`);
-  if (on && res.dlo) {
-    offerToDlo();
-    notify(name, `ReShade files are in place. Launch options are up to Decky Launch Options: in its ReShade tab, choose ${API_LABEL[api] ?? api}${autohdr || renodx ? " and turn on ReShade HDR" : ""} for this game.`);
-  }
-  if (res.dlo_leftover)
-    notify(name, "Decky Launch Options still adds ReShade's WINEDLLOVERRIDES to this game: set ReShade to Off for it there (harmless until then).");
   return "";
 };
 
 // A log in a scrollable dialog (the D-pad scrolls it once focused).
 export const showText = (title: string, text: string) => {
+  keepPage();
   showModal(
     <ConfirmModal strTitle={title} bAlertDialog strOKButtonText="Close"
       strDescription={

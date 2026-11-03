@@ -9,6 +9,7 @@ import hashlib
 import inspect
 import os
 import re
+import shutil
 import tempfile
 import threading
 import unittest
@@ -34,7 +35,6 @@ PackageName=AdvancedAutoHDR by Pumbo
 InstallPath=.\\reshade-shaders\\Shaders
 DownloadUrl=https://github.com/Filoppi/PumboAutoHDR/archive/refs/heads/master.zip
 """
-OPTIONS = 'WINEDLLOVERRIDES="d3dcompiler_47=n,b;{api}=n,b" {env}%command% {rest}'
 
 
 def fake_installer(marker):
@@ -169,16 +169,16 @@ class Setup(Base):
 
 
 class Games(Base):
-    def test_enable_merges_launch_options_and_stays_in_the_game_folder(self):
+    def test_enable_puts_reshade_in_the_game_folder_only(self):
         async def flow():
             p = await self.start(setup=True)
             info = await p.get_game(70)
             self.assertEqual((info["ok"], info["exe"], info["bits"], info["detected_api"]), (True, "Game.exe", 64, "dxgi"))
             self.assertFalse(info["log"]["found"])
-            r = await p.enable_game(70, "Game.exe", "dxgi", False, "", "-novid")
-            self.assertEqual(r, {"ok": True, "dlo": False, "launch_options": OPTIONS.format(api="dxgi", env="", rest="-novid")})
+            self.assertEqual(await p.enable_game(70, "Game.exe", "dxgi", False, ""), {"ok": True})
             self.assertIn(b"build 6.9.0", self.dll())
-            r = await p.enable_game(70, "../../escape.exe", "dxgi", False, "", "")
+            self.assertNotIn("wine", p.manifest.entries[70], "Proton loads dxgi from the game folder by itself")
+            r = await p.enable_game(70, "../../escape.exe", "dxgi", False, "")
             self.assertEqual(r["ok"], False)
             self.assertIn("not in the game's folder", r["error"])
             self.assertFalse((await p.get_game(12345))["ok"])
@@ -197,42 +197,39 @@ class Games(Base):
     def test_autohdr_and_a_new_api_set_the_game_up_again(self):
         async def flow():
             p = await self.start(setup=True)
-            options = (await p.enable_game(70, "Game.exe", "dxgi", False, "", "-novid"))["launch_options"]
-            r = await p.enable_game(70, "Game.exe", "dxgi", True, "", options)
-            self.assertEqual(r["launch_options"], OPTIONS.format(api="dxgi", env="DXVK_HDR=1 ", rest="-novid"))
+            await p.enable_game(70, "Game.exe", "dxgi", False, "")
+            self.assertTrue((await p.enable_game(70, "Game.exe", "dxgi", True, ""))["ok"])
             self.assertTrue(os.path.exists(os.path.join(self.game_dir, "AutoHDR.addon64")))
             self.assertTrue(os.path.exists(os.path.join(self.game_dir, "ReShadePreset.ini")))
-            self.assertFalse((await p.enable_game(70, "Game.exe", "d3d9", True, "", ""))["ok"])  # not DXGI
-            # switching API: the old setup is undone first, launch options stay one merge
-            r = await p.enable_game(70, "Game.exe", "d3d11", False, "", r["launch_options"])
-            self.assertEqual(r["launch_options"], OPTIONS.format(api="d3d11", env="", rest="-novid"))
+            self.assertFalse((await p.enable_game(70, "Game.exe", "d3d9", True, ""))["ok"])  # not DXGI
+            # switching API: the old setup is undone first
+            self.assertTrue((await p.enable_game(70, "Game.exe", "d3d11", False, ""))["ok"])
+            self.assertTrue(os.path.exists(os.path.join(self.game_dir, "d3d11.dll")))
             self.assertFalse(os.path.exists(os.path.join(self.game_dir, "dxgi.dll")))
             self.assertFalse(os.path.exists(os.path.join(self.game_dir, "AutoHDR.addon64")))
         self.run_async(flow())
 
-    def test_renodx_mod_from_its_author_with_the_hdr_variable(self):
+    def test_renodx_mod_from_its_author(self):
         async def flow():
             p = await self.start(setup=True)
-            options = (await p.enable_game(70, "Game.exe", "dxgi", False, "", "-novid"))["launch_options"]
+            await p.enable_game(70, "Game.exe", "dxgi", False, "")
             info = await p.get_game(70)
             self.assertEqual((info["renodx"]["auto"], info["renodx"]["mod"]["files"]), ("God of War (2018)", ["64"]))
             self.assertEqual(info["renodx"]["mod"]["host"], "github.com/clshortfuse")
-            self.assertFalse((await p.enable_game(70, "Game.exe", "dxgi", True, "God of War (2018)", options))["ok"])
-            r = await p.enable_game(70, "Game.exe", "dxgi", False, "God of War (2018)", options)
-            self.assertEqual(r["launch_options"], OPTIONS.format(api="dxgi", env="DXVK_HDR=1 ", rest="-novid"))
+            self.assertFalse((await p.enable_game(70, "Game.exe", "dxgi", True, "God of War (2018)"))["ok"])
+            self.assertTrue((await p.enable_game(70, "Game.exe", "dxgi", False, "God of War (2018)"))["ok"])
             self.assertTrue(os.path.exists(os.path.join(self.game_dir, "renodx-godofwar.addon64")))
             self.assertEqual((await p.get_state())["state"]["enabled"][0]["renodx"], "God of War (2018)")
             self.assertEqual((await p.get_game(70))["renodx"]["installed"], "God of War (2018)")
             # the author renames the snapshot: updating takes the old file out instead of leaving two mods
             mod = p._mod("God of War (2018)")
             mod["files"]["64"] = mod["files"]["64"].replace("renodx-godofwar", "renodx-gow")
-            r = await p.enable_game(70, "Game.exe", "dxgi", False, "God of War (2018)", r["launch_options"])
+            await p.enable_game(70, "Game.exe", "dxgi", False, "God of War (2018)")
             self.assertEqual(sorted(n for n in os.listdir(self.game_dir) if n.startswith("renodx")),
                              ["renodx-gow.addon64"])
-            r = await p.enable_game(70, "Game.exe", "dxgi", False, "", r["launch_options"])
-            self.assertEqual(r["launch_options"], OPTIONS.format(api="dxgi", env="", rest="-novid"))
+            await p.enable_game(70, "Game.exe", "dxgi", False, "")
             self.assertFalse([n for n in os.listdir(self.game_dir) if n.startswith("renodx")])
-            self.assertFalse((await p.enable_game(70, "Game.exe", "dxgi", False, "Not In The List", ""))["ok"])
+            self.assertFalse((await p.enable_game(70, "Game.exe", "dxgi", False, "Not In The List"))["ok"])
         self.run_async(flow())
 
     def test_a_renodx_download_does_not_hold_up_other_calls(self):
@@ -246,7 +243,7 @@ class Games(Base):
                 return self.download(*a, **kw)
 
             with mock.patch.object(dk_net, "download", slow):
-                enabling = asyncio.create_task(p.enable_game(70, "Game.exe", "dxgi", False, "God of War (2018)", ""))
+                enabling = asyncio.create_task(p.enable_game(70, "Game.exe", "dxgi", False, "God of War (2018)"))
                 await asyncio.to_thread(started.wait, 5)
                 self.assertFalse(p.lock.locked(), "the download runs before the lock is taken")
                 report = await asyncio.wait_for(p.save_report(), 5)  # needs the lock
@@ -255,40 +252,62 @@ class Games(Base):
                 self.assertTrue((await enabling)["ok"])
         self.run_async(flow())
 
-    def test_non_steam_game_options_come_from_shortcuts(self):
+    def test_the_library_scan_follows_a_moved_game_and_forgets_an_uninstalled_one(self):
         async def flow():
             p = await self.start(setup=True)
-            r = await p.enable_game(self.emu_appid, "eden.exe", "opengl32", False, "", "")
-            self.assertEqual(r["launch_options"], OPTIONS.format(api="opengl32", env="", rest="-fullscreen"))
-            self.assertTrue(os.path.exists(os.path.join(self.emu_dir, "opengl32.dll")))
-            r = await p.disable_game(self.emu_appid, "")
-            self.assertEqual((r["ok"], r["launch_options"]), (True, "-fullscreen"))
+            await p.enable_game(70, "Game.exe", "dxgi", False, "")
+            apps = os.path.dirname(os.path.dirname(self.game_dir))
+            moved = os.path.join(apps, "common", "Game Moved")
+            os.rename(self.game_dir, moved)  # Steam moved it (here: within one library, under a new folder name)
+            with open(os.path.join(apps, "appmanifest_70.acf"), "w") as f:
+                f.write('"AppState"\n{\n"appid" "70"\n"name" "God of War"\n"installdir" "Game Moved"\n}\n')
+            await p.scan_games()
+            self.assertEqual(p.manifest.entries[70]["target_dir"], moved)
+            self.assertEqual(await p.disable_game(70), {"ok": True, "kept": []})
+            self.assertEqual(sorted(os.listdir(moved)), ["Game.exe", "ReShade.ini"])
+            await p.enable_game(70, "Game.exe", "dxgi", False, "")
+            shutil.rmtree(moved)  # uninstalled
+            os.remove(os.path.join(apps, "appmanifest_70.acf"))
+            self.assertEqual((await p.scan_games())["state"]["enabled"], [])
+            self.assertTrue((await p.remove_data())["ok"], "nothing uses the downloads any more")
         self.run_async(flow())
 
-    def test_decky_launch_options_keeps_the_launch_options(self):
+    def test_opengl_in_a_non_steam_game_gets_a_wine_setting_in_its_prefix(self):
         async def flow():
             p = await self.start(setup=True)
-            r = await p.enable_game(70, "Game.exe", "dxgi", False, "", "~/.dlo/run %command%")
-            self.assertEqual(r, {"ok": True, "launch_options": "~/.dlo/run %command%", "dlo": True})
-            # DLO kept ReShade's overrides as the game's original: the panel is told to switch them off there
-            os.makedirs(os.path.join(decky.DECKY_USER_HOME, ".dlo"))
-            dlo = os.path.join(decky.DECKY_USER_HOME, ".dlo", "settings.json")
-            with open(dlo, "w") as f:
-                f.write('{"profiles": {"70": {"originalLaunchOptions": '
-                        '"WINEDLLOVERRIDES=\\"d3dcompiler_47=n,b;dxgi=n,b\\" %command%"}}}')
-            r = await p.disable_game(70, "~/.dlo/run %command%")
-            self.assertEqual((r["launch_options"], r["dlo_leftover"]),
-                             ("~/.dlo/run %command%", 'WINEDLLOVERRIDES="d3dcompiler_47=n,b;dxgi=n,b"'))
-            self.assertEqual(sorted(os.listdir(os.path.dirname(dlo))), ["settings.json"], "DLO's file is only read")
-            # Decky Launch Options installed: launch options are never written, whatever they are now
-            r = await p.enable_game(70, "Game.exe", "dxgi", False, "", "-novid", True)
-            self.assertEqual(r, {"ok": True, "launch_options": "-novid", "dlo": True})
+            r = await p.enable_game(self.emu_appid, "eden.exe", "opengl32", False, "")
+            self.assertFalse(r["ok"])
+            self.assertIn("Start the game once first", r["error"])
+            self.assertFalse(os.path.exists(os.path.join(self.emu_dir, "opengl32.dll")), "refused before any file")
+            registry = os.path.join(main._steam_root(), "steamapps", "compatdata", str(self.emu_appid), "pfx", "user.reg")
+            os.makedirs(os.path.dirname(registry))
+            with open(registry, "w") as f:
+                f.write("WINE REGISTRY Version 2\n")
+            self.assertTrue((await p.enable_game(self.emu_appid, "eden.exe", "opengl32", False, ""))["ok"])
+            self.assertTrue(os.path.exists(os.path.join(self.emu_dir, "opengl32.dll")))
+            with open(registry) as f:
+                self.assertIn('AppDefaults\\\\eden.exe\\\\DllOverrides', f.read())
+            self.assertEqual(await p.disable_game(self.emu_appid), {"ok": True, "kept": []})
+            with open(registry) as f:
+                self.assertEqual(f.read(), "WINE REGISTRY Version 2\n")
+        self.run_async(flow())
+
+    def test_with_launch_options_the_user_pastes_wine_is_left_alone(self):
+        async def flow():
+            p = await self.start(setup=True)
+            r = await p.set_setting("use_launch_options", True)
+            self.assertEqual(r["state"]["launch_options"]["opengl32"],
+                             'WINEDLLOVERRIDES="d3dcompiler_47=n,b;opengl32=n,b" %command%')
+            # no prefix needed: nothing is written there
+            self.assertTrue((await p.enable_game(self.emu_appid, "eden.exe", "opengl32", False, ""))["ok"])
+            self.assertNotIn("wine", p.manifest.entries[self.emu_appid])
+            self.assertTrue((await p.disable_game(self.emu_appid))["ok"])
         self.run_async(flow())
 
     def test_two_sessions_without_reshade_warn_the_user(self):
         async def flow():
             p = await self.start(setup=True)
-            await p.enable_game(70, "Game.exe", "dxgi", False, "", "")
+            await p.enable_game(70, "Game.exe", "dxgi", False, "")
             for expect_warning in (False, True):
                 self.assertTrue((await p.session_started(70))["managed"])
                 r = await p.session_ended(70)
@@ -299,7 +318,7 @@ class Games(Base):
     def test_logs_and_the_report(self):
         async def flow():
             p = await self.start(setup=True)
-            await p.enable_game(70, "Game.exe", "dxgi", False, "", "")
+            await p.enable_game(70, "Game.exe", "dxgi", False, "")
             with open(os.path.join(self.game_dir, "ReShade.log"), "w") as f:
                 f.write("t [1] | ERROR | Failed to compile x.fx\n")
             self.assertIn("Failed to compile", (await p.get_logs(70))["reshade"])
@@ -320,7 +339,7 @@ class Versions(Base):
     def test_a_newer_reshade_without_known_sums_is_shown_never_installed(self):
         async def flow():
             p = await self.start(setup=True)
-            await p.enable_game(70, "Game.exe", "dxgi", False, "", "")
+            await p.enable_game(70, "Game.exe", "dxgi", False, "")
             with mock.patch.object(reshade_release, "latest_version", return_value="6.10.0"):
                 state = (await p.check_reshade())["state"]
                 self.assertEqual((state["reshade"]["newer_than_known"], state["reshade"]["update_available"]),
@@ -334,7 +353,7 @@ class Versions(Base):
     def test_a_plugin_update_with_new_sums_moves_every_game(self):
         async def flow():
             p = await self.start(setup=True)
-            await p.enable_game(70, "Game.exe", "dxgi", False, "", "")
+            await p.enable_game(70, "Game.exe", "dxgi", False, "")
             with mock.patch.object(reshade_release, "KNOWN", known(self.versions, "6.10.0", "6.9.0", "6.5.1")), \
                     mock.patch.object(reshade_release, "FALLBACK", "6.10.0"), \
                     mock.patch.object(reshade_release, "latest_version", return_value="6.10.0"):
@@ -356,7 +375,7 @@ class Versions(Base):
     def test_a_fixed_version_and_the_standard_build_reach_every_game(self):
         async def flow():
             p = await self.start(setup=True)
-            await p.enable_game(70, "Game.exe", "dxgi", False, "", "")
+            await p.enable_game(70, "Game.exe", "dxgi", False, "")
             state = (await p.set_version("6.5.1"))["state"]
             self.assertEqual((state["reshade"]["installed"], state["settings"]["version"]), ("6.5.1", "6.5.1"))
             self.assertIn(b"build 6.5.1", self.dll())
@@ -373,10 +392,10 @@ class Versions(Base):
         async def flow():
             p = await self.start()
             with mock.patch.object(dk_fs, "write_json", side_effect=OSError(28, "No space left on device")):
-                r = await p.set_setting("auto_launch_options", False)
+                r = await p.set_setting("use_launch_options", True)
             self.assertEqual(r["ok"], False)
             self.assertIn("No space left", r["error"])
-            self.assertTrue(r["state"]["settings"]["auto_launch_options"])
+            self.assertFalse(r["state"]["settings"]["use_launch_options"])
         self.run_async(flow())
 
 
@@ -414,12 +433,11 @@ class Data(Base):
     def test_downloaded_files_go_only_when_no_game_uses_them(self):
         async def flow():
             p = await self.start(setup=True)
-            options = (await p.enable_game(70, "Game.exe", "dxgi", False, "", "-novid"))["launch_options"]
+            await p.enable_game(70, "Game.exe", "dxgi", False, "")
             r = await p.remove_data()
             self.assertEqual(r["ok"], False)
             self.assertIn("Turn ReShade off", r["state"]["job"]["error"])
-            r = await p.disable_game(70, options)
-            self.assertEqual(r["launch_options"], "-novid")
+            self.assertEqual(await p.disable_game(70), {"ok": True, "kept": []})
             self.assertEqual(sorted(os.listdir(self.game_dir)), ["Game.exe", "ReShade.ini"])
             state = (await p.remove_data())["state"]
             self.assertEqual(state["job"]["error"], "")
@@ -430,7 +448,7 @@ class Data(Base):
     def test_a_damaged_game_list_blocks_changes_and_says_why(self):
         async def flow():
             p = await self.start(setup=True)
-            await p.enable_game(70, "Game.exe", "dxgi", False, "", "")
+            await p.enable_game(70, "Game.exe", "dxgi", False, "")
             for name in os.listdir(decky.DECKY_PLUGIN_SETTINGS_DIR):
                 if name.startswith("manifest.json"):
                     with open(os.path.join(decky.DECKY_PLUGIN_SETTINGS_DIR, name), "w") as f:
@@ -438,7 +456,7 @@ class Data(Base):
             q = await self.start()
             state = (await q.get_state())["state"]
             self.assertIn("damaged", state["job"]["error"])
-            r = await q.enable_game(70, "Game.exe", "dxgi", False, "", "")
+            r = await q.enable_game(70, "Game.exe", "dxgi", False, "")
             self.assertFalse(r["ok"])
             with open(os.path.join(decky.DECKY_PLUGIN_SETTINGS_DIR, "manifest.json")) as f:
                 self.assertEqual(f.read(), "{broken", "kept for repair, never written over")
@@ -467,13 +485,13 @@ class WriteErrors(Base):
             p = await self.start(setup=True)
             denied = OSError(13, "Permission denied", "/home/someone/file")
             with mock.patch.object(main.reshade_install, "_copy", side_effect=denied):
-                game = await p.enable_game(70, "Game.exe", "dxgi", False, "", "")
+                game = await p.enable_game(70, "Game.exe", "dxgi", False, "")
             with mock.patch.object(reshade_shaders, "_save_index", side_effect=denied):
                 shader = await p.set_package(p.packages[0]["id"], True)
             with mock.patch.object(reshade_release, "extract", side_effect=denied):
                 release = await p.set_version("6.5.1")
             with mock.patch.object(main.dk_fs, "write_json", side_effect=denied):
-                setting = await p.set_setting("auto_launch_options", False)
+                setting = await p.set_setting("use_launch_options", True)
             with mock.patch.object(p, "_report", side_effect=denied):
                 report = await p.save_report()
             for r in (game, shader, release, setting, report):
@@ -517,7 +535,7 @@ class Stopping(Base):
     def test_uninstall_leaves_games_set_up(self):
         async def flow():
             p = await self.start(setup=True)
-            await p.enable_game(70, "Game.exe", "dxgi", False, "", "")
+            await p.enable_game(70, "Game.exe", "dxgi", False, "")
             await p._uninstall()
             self.assertTrue(os.path.exists(os.path.join(self.game_dir, "dxgi.dll")))
         self.run_async(flow())

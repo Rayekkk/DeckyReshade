@@ -10,7 +10,7 @@ import { API_LABEL, checkForUpdates, Enabled, getState, performUpdate, scanGames
 import { GamePage } from "./game";
 import { ReshadePage, ShadersPage, TroubleshootingPage } from "./pages";
 import { settle } from "./result";
-import { applyGame, errorStyle, ICONS, muted, NAME, panel, warnText } from "./shared";
+import { applyGame, errorStyle, ICONS, muted, NAME, panel, takeResume, warnText } from "./shared";
 import { ActionButton, infoRow, notify, PageHeader, PageShell, SectionLink, statusPlaceholder } from "./ui";
 import { inWizard, Run, Wizard } from "./wizard";
 
@@ -26,16 +26,19 @@ const renodxNote = (status: string | null) =>
   status ? `RenoDX mod: ${status === "working" ? "working" : status === "wip" ? "in progress" : "see its notes"}` : undefined;
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
 
-// Every open of the menu starts on the main page (in game: with This game at the top), as in Legion Go 2 Companion.
+// Every open of the menu starts on the main page (in game: with This game at the top), as in Legion Go 2 Companion;
+// back from a dropdown menu or a dialog, which Decky unmounts the panel for, it is on the page it was.
 const Content: FC = () => {
   const visible = useQuickAccessVisible();
+  const [resumed] = useState(takeResume);
   const [state, setStateRaw] = useState<State | null>(panel.lastState);
   const [error, setError] = useState("");
   const [failure, setFailure] = useState("");  // the last refused action, until the next action or page (UI.md §5)
   const [busy, setBusy] = useState(false);
-  const [page, setPageRaw] = useState<Page | null>(null);
-  const [gameId, setGameId] = useState<number | null>(null);
-  const [gameFromList, setGameFromList] = useState(false); // opened from Games (else from the main page)
+  const [page, setPageRaw] = useState<Page | null>((resumed?.page as Page | null) ?? null);
+  const [gameId, setGameId] = useState<number | null>(resumed?.gameId ?? null);
+  const [gameFromList, setGameFromList] = useState(resumed?.gameFromList ?? false); // opened from Games (else main)
+  panel.nav = { page, gameId, gameFromList };
   const [back, setBack] = useState("");  // the row of the page just left: focused once on the way back
   const openers = useRef<Partial<Record<Page, string>>>({});  // the row that opened each page
   const [, rerender] = useState(0);
@@ -92,14 +95,12 @@ const Content: FC = () => {
   };
   const focus = (id: string) => visible && back === id;
 
-  const nonsteam = (appid: number) => !!state?.games.find(g => g.appid === appid)?.nonsteam;
-
   const turnOffAll = async () => {
     setBusy(true);
     setFailure("");
     let ok = 0;
     const games = state?.enabled ?? [];
-    for (const g of games) if (!await applyGame(g.appid, g.name, nonsteam(g.appid), false)) ok++;
+    for (const g of games) if (!await applyGame(g.appid, g.name, false)) ok++;
     notify(NAME, `${ok} of ${plural(games.length, "game")} restored to how they were.`);
     setBusy(false);
     refresh();
@@ -197,7 +198,7 @@ const Content: FC = () => {
           ))}
           <PanelSectionRow>
             <ActionButton disabled={working} onClick={turnOffAll}
-              description="Removes ReShade's DLLs and launch options from every game. Your ReShade settings, presets and logs stay in the game folders. Do this before uninstalling.">
+              description="Removes ReShade's DLLs and Wine settings from every game; launch options you added yourself stay. Your ReShade settings, presets and logs stay in the game folders. Do this before uninstalling.">
               Turn off ReShade in all games
             </ActionButton>
           </PanelSectionRow>

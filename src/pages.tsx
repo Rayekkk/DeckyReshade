@@ -9,7 +9,7 @@ import {
   updateReshade, updateShaders,
 } from "./api";
 import { settle } from "./result";
-import { ago, dloInstalled, exportToDlo, NAME, okText, showText, versionLabel, warnText } from "./shared";
+import { ago, keepPage, NAME, okText, showText, versionLabel, warnText } from "./shared";
 import { ActionButton, confirmAction, infoRow, notify } from "./ui";
 import { resetWizard, Run } from "./wizard";
 
@@ -75,7 +75,7 @@ export const ReshadePage: FC<{ state: State; working: boolean; run: Run }> = ({ 
           <DropdownItem layout="below" childrenContainerWidth="max" label="Version" disabled={working} selectedOption={settings.version}
             description="Changing it moves every game to that version."
             rgOptions={["latest", ...reshade.versions].map(v => ({ data: v, label: versionLabel(v, reshade.versions[0]) }))}
-            onChange={o => run(() => setVersion(o.data))} />
+            onMenuWillOpen={keepPage} onChange={o => run(() => setVersion(o.data))} />
         </PanelSectionRow>
         <PanelSectionRow>
           <ToggleField label="Add-on build" checked={settings.addon} disabled={working}
@@ -85,18 +85,12 @@ export const ReshadePage: FC<{ state: State; working: boolean; run: Run }> = ({ 
       </PanelSection>
       <PanelSection title="Launch options">
         <PanelSectionRow>
-          <ToggleField label="Set launch options automatically" checked={settings.auto_launch_options} disabled={working}
-            description={`Turning ReShade on adds ${state.launch_words.dxgi} (with the chosen API) to the game's launch options, next to anything already there. Off: add it yourself. With Decky Launch Options installed, it decides instead (ReShade tab).`}
-            onChange={on => run(() => setSetting("auto_launch_options", on))} />
+          <ToggleField label="Use launch options" checked={settings.use_launch_options} disabled={working}
+            description={settings.use_launch_options
+              ? "You add ReShade's line to each game's launch options: turning a game on copies it, and the game's page has a Copy button. Nothing else is changed outside the game folder."
+              : "Off: no launch options needed. ReShade starts by itself; OpenGL and Direct3D 10 games get a Wine setting for their executable, made after the game's first start. Turn on if ReShade does not start in a game."}
+            onChange={on => run(() => setSetting("use_launch_options", on))} />
         </PanelSectionRow>
-        {dloInstalled() && (
-          <PanelSectionRow>
-            <ActionButton onClick={() => exportToDlo(state.launch_words, state.autohdr_env)}
-              description="Adds a ReShade tab to Decky Launch Options with one choice per game (Off or a graphics API) and the HDR variable for AutoHDR and RenoDX.">
-              Add ReShade to Decky Launch Options
-            </ActionButton>
-          </PanelSectionRow>
-        )}
       </PanelSection>
       <PanelSection title="RenoDX mod list">
         <PanelSectionRow>
@@ -139,7 +133,7 @@ export const TroubleshootingPage: FC<{ state: State; working: boolean; run: Run;
           {infoRow("ReShade's own log", "Each game's page has Show ReShade log: what ReShade did in that game and which effects failed.")}
           <PanelSectionRow>
             <ActionButton onClick={showLog}
-              description="Everything the plugin did: downloads, games turned on or off, launch options before and after, errors.">
+              description="Everything the plugin did: downloads, games turned on or off, Wine settings, errors.">
               Show plugin log
             </ActionButton>
           </PanelSectionRow>

@@ -5,14 +5,16 @@
 
 Rules that make rollback safe:
   * DLLs are only ever added; a file of the same name that is not ours stops the install (another ReShade, a mod),
-    except a d3dcompiler_47.dll the game ships itself, which ReShade can use as it is,
+    except a d3dcompiler_47.dll the game ships itself: ReShade uses it as it is when it builds Shader Model 5.1, else
+    it is set aside (d3dcompiler_47.dll.deckyreshade-backup) for ours and put back on removal,
   * the manifest records every file we wrote with its sha256, and we delete only files whose hash still matches,
   * ReShade.ini is created when missing and otherwise only gets our shader folders added; it holds the user's
     ReShade settings, so it stays in the game folder on removal (with ReShadePreset.ini and ReShade.log, which
     ReShade writes); a first preset written for AutoHDR is removed with it while nobody has changed it,
-  * launch options: our entries go into WINEDLLOVERRIDES next to whatever is already there (the user's, another
-    plugin's). On removal the original comes back when nobody edited the options since, otherwise only our entries
-    are taken out.
+  * launch options are never touched. Proton already loads dxgi, d3d9, d3d11 and d3d12 from the game folder first
+    (its overrides for DXVK and vkd3d), and Wine does so for d3dcompiler_47 and dinput8 (built "prefer native");
+    the other APIs (WINE_APIS) get a Wine DLL override in the game's prefix, for its executable alone, taken out
+    again on removal while it is still ours.
 """
 
 import os
@@ -28,7 +30,10 @@ COMPILER = "d3dcompiler_47.dll"
 INI = "ReShade.ini"
 PRESET = "ReShadePreset.ini"
 LOG = "ReShade.log"
-_OVERRIDES = re.compile(r"""^WINEDLLOVERRIDES=(["']?)(.*)\1$""")
+BACKUP = ".deckyreshade-backup"  # a game file set aside while ours is in its place
+REGISTRY = "user.reg"  # the prefix's HKEY_CURRENT_USER
+WINE_OVERRIDE = "native,builtin"
+WINE_APIS = ("opengl32", "d3d10")  # APIs Wine would otherwise take from itself (checked on Proton 9 and 11)
 
 
 class InstallError(Exception):
@@ -42,12 +47,17 @@ def _check_manifest(data):
         if (not appid.isdigit() or not isinstance(e, dict)
                 or not all(isinstance(e.get(k), str) for k in ("name", "target_dir", "exe", "api"))
                 or type(e.get("bits")) is not int or not isinstance(e.get("files"), dict)
-                or not all(isinstance(k, str) and isinstance(v, str) for k, v in e["files"].items())):
+                or not all(isinstance(k, str) and isinstance(v, str) for k, v in e["files"].items())
+                or "wine" in e and not (isinstance(e["wine"], dict)
+                                        and all(isinstance(e["wine"].get(k), str) for k in ("prefix", "exe", "dll")))
+                or "backups" in e and not (isinstance(e["backups"], dict) and all(
+                    isinstance(k, str) and isinstance(v, str) for k, v in e["backups"].items()))):
             raise ValueError(f"entry {appid!r} is not a game set up by this plugin")
 
 
 class Manifest:
-    """appid -> {name, target_dir, exe, api, bits, files: {name: sha256}, launch_original, launch_applied}
+    """appid -> {name, target_dir, exe, api, bits, files: {name: sha256}, wine?: {prefix, exe, dll},
+    backups?: {name: sha256 of the game's own file set aside}}
 
     It is the only record of what the plugin put into game folders. A damaged file comes back from its last-good
     copy; when that is impossible (or the file cannot be read) `problem` says why and nothing is saved over it, so
@@ -72,127 +82,121 @@ class Manifest:
         dk_fs.write_json(self.path, {str(k): v for k, v in self.entries.items()})
 
 
-def our_overrides(api):
-    # n,b also for the compiler: when our DLL is gone but the option stays (kept by another tool), Wine falls back
-    # to its own instead of failing to load it
-    return ["d3dcompiler_47=n,b", f"{api}=n,b"]
+def _builds_sm51(path):
+    """Whether a d3dcompiler_47 builds Shader Model 5.1, which ReShade compiles DirectX 12 effects with. Windows 8.1's
+    (6.3.9600, still shipped by some games) does not: every effect fails with X3506 "unrecognized compiler target"."""
+    with open(path, "rb") as f:
+        return b"vs_5_1" in f.read()
 
 
-def launch_word(api):
-    """The WINEDLLOVERRIDES word for one API, as written into launch options (and offered to Decky Launch Options)."""
-    return _overrides_word(our_overrides(api))
+def launch_options(api):
+    """What the user pastes into a game's launch options when they manage them (Settings → Use launch options).
+    n,b also for the compiler: when our DLL is gone but the option stays, Wine falls back to its own."""
+    return f'WINEDLLOVERRIDES="d3dcompiler_47=n,b;{api}=n,b" %command%'
 
 
-def dlo_leftover(options):
-    """The WINEDLLOVERRIDES word in options when it still holds a ReShade proxy override (with d3dcompiler_47=n,b,
-    as this plugin writes it), else ''. Used on what Decky Launch Options stores for a game."""
-    for word in (options or "").split():
-        match = _OVERRIDES.match(word)
-        entries = match.group(2).split(";") if match else []
-        if "d3dcompiler_47=n,b" in entries and any(e.split("=")[0] in APIS for e in entries):
-            return word
+def wine_prefix(game, steam_root):
+    """The game's Proton prefix folder (compatdata/<appid>), '' before its first start (Steam makes it then).
+    A Steam game's is in its own library, a shortcut's in Steam's main one."""
+    libraries = [] if game.get("nonsteam") else [os.path.dirname(os.path.dirname(game["install_dir"]))]
+    for steamapps in libraries + [os.path.join(steam_root, "steamapps")]:
+        path = os.path.join(steamapps, "compatdata", str(game["appid"]))
+        if os.path.isfile(os.path.join(path, "pfx", REGISTRY)):
+            return path
     return ""
 
 
-def dlo_managed(options):
-    """Whether Decky Launch Options runs this game (its options are then ~/.dlo/run %command%, and DLO puts back
-    the options it keeps whenever it restores them, so ours would not last)."""
-    return any(re.search(r"(^|/)\.dlo/run$", word) for word in (options or "").split())
+def prefix_in_use(prefix):
+    """Whether a process runs in the prefix (the game, its launcher, a wineserver still closing). Wine keeps the
+    registry in memory and writes it back on exit, so a change made meanwhile would be lost."""
+    prefix = os.path.realpath(prefix)
+    try:
+        pids = [p for p in os.listdir("/proc") if p.isdigit()]
+    except OSError:
+        return False
+    for pid in pids:
+        try:
+            with open(f"/proc/{pid}/environ", "rb") as f:
+                env = f.read().split(b"\0")
+        except OSError:
+            continue  # gone, or not ours to read (a Proton game runs as the same user)
+        for var in env:
+            name, _, value = var.partition(b"=")
+            if name in (b"STEAM_COMPAT_DATA_PATH", b"WINEPREFIX") and value:
+                path = os.path.realpath(os.fsdecode(value))
+                if path in (prefix, os.path.join(prefix, "pfx")):
+                    return True
+    return False
 
 
-def _without_dlls(entries, names):
-    """Entries with the given DLLs taken out; Wine also accepts a list sharing one mode ('dxgi,d3d11=n,b'),
-    whose other DLLs keep that mode."""
-    kept = []
-    for entry in entries:
-        dlls, sep, mode = entry.partition("=")
-        rest = [d for d in dlls.split(",") if d and d.lower() not in names]
-        if rest:
-            kept.append(",".join(rest) + sep + mode)
-    return kept
+def _section(exe):
+    # the key as Wine writes it in user.reg, backslashes doubled; Wine matches the exe name without case
+    return f"[Software\\\\Wine\\\\AppDefaults\\\\{exe}\\\\DllOverrides]"
 
 
-def _overrides_word(entries):
-    value = ";".join(entries)
-    return f'WINEDLLOVERRIDES="{value}"' if ";" in value else f"WINEDLLOVERRIDES={value}"
+def _registry(prefix):
+    with open(os.path.join(prefix, "pfx", REGISTRY), "rb") as f:
+        return f.read().decode("utf-8", "surrogateescape").split("\n")
 
 
-def _env_key(word):
-    return word.split("=", 1)[0]
+def _save_registry(prefix, lines):
+    dk_fs.write_atomic(os.path.join(prefix, "pfx", REGISTRY), "\n".join(lines).encode("utf-8", "surrogateescape"))
 
 
-def _game_command_start(words):
-    """Where the command that starts the game begins: after the last && / || / ; before %command% (an earlier
-    command, mkdir -p x && %command%, must not get the game's variables)."""
-    if "%command%" not in words:
-        return 0
-    before = words[:words.index("%command%")]
-    return max((i + 1 for i, w in enumerate(before) if w in ("&&", "||", ";") or w.endswith(";")), default=0)
+def _find_section(lines, exe):
+    """(index of the section's header, index after its last line), or (None, None)."""
+    header = _section(exe).lower()
+    for i, line in enumerate(lines):
+        if line.lower().startswith(header):  # the header is followed by " <modified time>"
+            end = i + 1
+            while end < len(lines) and lines[end] and not lines[end].startswith("["):
+                end += 1
+            return i, end
+    return None, None
 
 
-def with_overrides(options, ours, env=()):
-    """Launch options with our DLL overrides merged in and our environment words (DXVK_HDR=1) next to them, on the
-    command that starts the game; %command% added when the options had none. Another value for one of our variables
-    is replaced."""
-    keys = {_env_key(w) for w in env}
-    words = [w for w in (options or "").split() if _env_key(w) not in keys]
-    # words are split on spaces; a quoted value holding one would be cut apart and rejoined wrongly (an apostrophe in
-    # a plain argument, -name=Rayek's, is no quote)
-    if any(w.count('"') % 2 or ("='" in w and w.count("'") % 2) for w in words):
-        raise InstallError("these launch options quote text with spaces in it, which the plugin will not edit: turn "
-                           "off \"Set launch options automatically\" and add the WINEDLLOVERRIDES entries yourself")
-    if "%command%" not in words:
-        words = ["%command%"] + words  # the old options were the game's arguments
-    start = _game_command_start(words)
-    names = {e.split("=", 1)[0].lower() for e in ours}
-    for i in range(start, len(words)):
-        match = _OVERRIDES.match(words[i])
-        if match:
-            kept = _without_dlls([e for e in match.group(2).split(";") if e], names)
-            words[i:i + 1] = [_overrides_word(kept + ours), *env]
-            break
+def set_dll_override(prefix, exe, dll):
+    """Wine loads dll from the game folder first, for this executable only (what WINEDLLOVERRIDES=dll=n,b in its
+    launch options would do). True when we added it; False when the same value was already there, so it is not ours
+    to take away. Another value for the DLL is the user's: refused."""
+    if not re.fullmatch(r"[\w .+()-]+\.exe", exe, re.ASCII):  # Wine would escape other characters in the key
+        raise InstallError(f"the executable's name ({exe}) is not one the plugin can set Wine up for; turn on "
+                           "\"Use launch options\" in Settings instead")
+    lines = _registry(prefix)
+    value = f'"{dll}"="{WINE_OVERRIDE}"'
+    start, end = _find_section(lines, exe)
+    if start is None:
+        if lines and lines[-1] == "":
+            lines.pop()
+        lines += ["", f"{_section(exe)} {int(time.time())}", value, ""]
     else:
-        words[start:start] = [_overrides_word(ours), *env]
-    return " ".join(words)
+        current = next((l for l in lines[start + 1:end] if l.lower().startswith(f'"{dll}"=')), None)
+        if current == value:
+            return False
+        if current is not None:
+            raise InstallError(f"this game already has its own Wine setting for {dll}; leaving it alone. Turn on "
+                               "\"Use launch options\" in Settings instead")
+        lines.insert(end, value)
+    _save_registry(prefix, lines)
+    return True
 
 
-def without_overrides(current, original, applied, ours, env=()):
-    """Undo with_overrides: the original when untouched since, else our entries taken out of what is there now.
-
-    An entry the original had for one of our DLLs (a user's own d3dcompiler_47=n), which ours replaced, comes back;
-    so does the original value of one of our environment variables.
-    """
-    current = (current or "").strip()
-    if current == applied:
-        return original
-    keys = {_env_key(w) for w in env}
-    original_env = {_env_key(w): w for w in (original or "").split() if _env_key(w) in keys}
-    current = " ".join(original_env.get(_env_key(w), "") if w in env else w for w in current.split())
-    before = []
-    for word in (original or "").split():
-        match = _OVERRIDES.match(word)
-        if match:
-            before = [e for e in match.group(2).split(";") if e]
-    names = {e.split("=", 1)[0].lower() for e in ours}
-    restore = []
-    for entry in before:
-        dlls, sep, mode = entry.partition("=")
-        back = [d for d in dlls.split(",") if d.lower() in names]
-        if back:
-            restore.append(",".join(back) + sep + mode)
-    words = []
-    for word in current.split():
-        match = _OVERRIDES.match(word)
-        if match:
-            kept = [e for e in match.group(2).split(";") if e and e not in ours]
-            kept += [e for e in restore if e not in kept]
-            if not kept:
-                continue
-            word = _overrides_word(kept)
-        words.append(word)
-    if words == ["%command%"] and "%command%" not in (original or ""):
-        return original
-    return " ".join(words)
+def remove_dll_override(prefix, exe, dll):
+    """Take out what set_dll_override added; a value changed since is no longer ours and stays."""
+    try:
+        lines = _registry(prefix)
+    except FileNotFoundError:
+        return  # the prefix was deleted, and the setting with it
+    start, end = _find_section(lines, exe)
+    value = f'"{dll}"="{WINE_OVERRIDE}"'
+    if start is None or value not in lines[start + 1:end]:
+        return
+    body = [l for l in lines[start + 1:end] if l != value]
+    if any(not l.startswith("#") for l in body):
+        lines[start + 1:end] = body
+    else:  # only Wine's time stamp left: the section goes, with the blank line before it
+        del lines[start - 1 if start and lines[start - 1] == "" else start:end]
+    _save_registry(prefix, lines)
 
 
 def wine_path(path):
@@ -273,13 +277,13 @@ def autohdr_preset():
     return f"Techniques={techniques}\nTechniqueSorting={techniques}\n"
 
 
-def enable(manifest, game, exe, api, bits, sources, shaders_dir, launch_options, launch=True, env=(), preset=None):
-    """Install ReShade for one game; returns the launch options to apply.
+def enable(manifest, game, exe, api, bits, sources, shaders_dir, prefix="", preset=None):
+    """Install ReShade for one game.
 
     game: {appid, name, install_dir}; exe: path relative to install_dir; sources: {name in the game folder: file}
-    (the ReShade DLL under the API's name, the matching d3dcompiler_47, add-ons); launch: False leaves the launch
-    options to the user (returned unchanged, and never touched on disable); env: environment words to add with our
-    overrides (DXVK_HDR=1 for AutoHDR); preset: ReShadePreset.ini to start with when the game has none.
+    (the ReShade DLL under the API's name, the matching d3dcompiler_47, add-ons); prefix: the game's Proton prefix
+    when the API needs a Wine DLL override there ('' when the user manages launch options); preset:
+    ReShadePreset.ini to start with when the game has none.
     """
     appid = game["appid"]
     target = os.path.dirname(os.path.join(game["install_dir"], exe))
@@ -288,6 +292,7 @@ def enable(manifest, game, exe, api, bits, sources, shaders_dir, launch_options,
         raise InstallError("ReShade is set up for another executable or API here; turn it off first")
     known = (old or {}).get("files", {})
     want = {name: sha256_file(src) for name, src in sources.items()}
+    set_aside = None  # the game's own compiler, too old for ReShade: kept beside ours and put back on removal
     for name in list(want):
         path = os.path.join(target, name)
         if not os.path.exists(path) and not os.path.islink(path):
@@ -299,17 +304,39 @@ def enable(manifest, game, exe, api, bits, sources, shaders_dir, launch_options,
         if digest in (want[name], known.get(name)):
             continue
         if name == COMPILER and digest:
-            del want[name]  # the game's own compiler works for ReShade too
+            if _builds_sm51(path):
+                del want[name]  # the game's own compiler works for ReShade too
+            else:
+                set_aside = digest
             continue
         raise InstallError(f"{name} already exists in the game folder and is not ours (another ReShade or a mod?); "
                            "leaving it alone")
 
-    new_options = with_overrides(launch_options, our_overrides(api), env) if launch else None  # may refuse: first
-    # Our entries can already be there (left by an earlier install); they are never part of the user's original.
-    original = without_overrides(launch_options, "", None, our_overrides(api), env) if launch_options else ""
-    entry = old or {"name": game["name"], "target_dir": target, "files": {}, "launch_original": original}
-    entry.update(exe=exe, api=api, bits=bits, env=list(env))
+    entry = old or {"name": game["name"], "target_dir": target, "files": {}}
+    entry.update(exe=exe, api=api, bits=bits)
+    if prefix and not entry.get("wine"):
+        if prefix_in_use(prefix):
+            raise InstallError("close the game first: Wine writes its settings back when it exits")
+        name = os.path.basename(exe)
+        try:
+            added = set_dll_override(prefix, name, api)
+        except OSError as e:
+            raise InstallError(f"could not change the game's Wine settings ({dk_fs.shown(e)})") from e
+        if added:  # recorded before any file is copied, so a failure later can still be undone
+            entry["wine"] = {"prefix": prefix, "exe": name, "dll": api}
+            manifest.entries[appid] = entry
+            manifest.save()
     try:
+        if set_aside:
+            path, backup = os.path.join(target, COMPILER), os.path.join(target, COMPILER + BACKUP)
+            if os.path.lexists(backup) and sha256_file(backup) != set_aside:
+                raise InstallError(f"{COMPILER + BACKUP} in the game folder is not the game's {COMPILER}; leaving both "
+                                   "alone")
+            # recorded first: put back on removal even if the plugin stops right after the move
+            entry.setdefault("backups", {})[COMPILER] = set_aside
+            manifest.entries[appid] = entry
+            manifest.save()
+            os.replace(path, backup)
         for name in want:
             _copy(sources[name], os.path.join(target, name))
             entry["files"][name] = want[name]
@@ -332,12 +359,9 @@ def enable(manifest, game, exe, api, bits, sources, shaders_dir, launch_options,
     except OSError as e:
         raise InstallError(f"could not write to the game folder ({dk_fs.shown(e)})") from e
 
-    if launch:
-        entry["launch_applied"] = new_options
     entry["enabled_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     manifest.entries[appid] = entry
     manifest.save()
-    return new_options if launch else (launch_options or "").strip()
 
 
 def refresh(manifest, sources_for):
@@ -367,34 +391,112 @@ def refresh(manifest, sources_for):
     return updated
 
 
-def disable(manifest, appid, launch_options):
-    """Remove what we installed. Returns {launch_options, kept: [files left because they changed]}."""
+def disable(manifest, appid):
+    """Remove what we installed. Returns the files left because they changed."""
     entry = manifest.entries.get(appid)
     if not entry:
-        return {"launch_options": (launch_options or "").strip(), "kept": []}
-    if not os.path.isdir(entry["target_dir"]):  # an SD card taken out: forgetting the game would orphan its files
-        raise InstallError("the game's folder is not available (is its SD card in?); nothing was changed")
+        return []
+    if not os.path.isdir(entry["target_dir"]):
+        if not _gone(entry):  # an SD card taken out: forgetting the game would orphan its files
+            raise InstallError("the game's folder is not available (is its SD card in?); nothing was changed")
+        forget(manifest, appid)  # uninstalled or deleted: nothing of ours is left there
+        return []
+    wine = entry.get("wine")
+    if wine:  # first: refused or failed, nothing else is changed either
+        if prefix_in_use(wine["prefix"]):
+            raise InstallError("close the game first: Wine writes its settings back when it exits")
+        try:
+            remove_dll_override(wine["prefix"], wine["exe"], wine["dll"])
+        except OSError as e:
+            raise InstallError(f"could not change the game's Wine settings ({dk_fs.shown(e)})") from e
+        del entry["wine"]
+        manifest.save()
     kept = []
     for name, digest in entry["files"].items():
         path = os.path.join(entry["target_dir"], name)
         try:
             if not os.path.exists(path):
                 continue
-            if sha256_file(path) == digest:
+            current = sha256_file(path)
+            if current == digest:
                 os.remove(path)
-            else:
+            elif current != entry.get("backups", {}).get(name):  # else the game's own is back: handled below
                 kept.append(name)
         except OSError:
             kept.append(name)
+    for name, digest in entry.get("backups", {}).items():
+        path = os.path.join(entry["target_dir"], name)
+        backup = path + BACKUP
+        try:
+            if not os.path.exists(backup):
+                continue
+            if not os.path.lexists(path):
+                os.replace(backup, path)
+            elif sha256_file(path) == digest:
+                os.remove(backup)  # the game put its own back (an update, Steam's file check)
+            else:
+                kept.append(name + BACKUP)
+        except OSError:
+            kept.append(name + BACKUP)
     # ReShade.log stays with ReShade.ini: it is what tells why ReShade did not work, often the reason to turn it off
-    if entry.get("launch_applied"):
-        restored = without_overrides(launch_options, entry.get("launch_original", ""), entry["launch_applied"],
-                                     our_overrides(entry["api"]), entry.get("env", []))
-    else:  # the user manages this game's launch options
-        restored = (launch_options or "").strip()
     del manifest.entries[appid]
     manifest.save()
-    return {"launch_options": restored, "kept": kept}
+    return kept
+
+
+def _install_dir(entry):
+    """The game's folder: target_dir without the executable's subfolders."""
+    path = entry["target_dir"]
+    for _ in [p for p in entry["exe"].replace("\\", "/").split("/")[:-1] if p]:
+        path = os.path.dirname(path)
+    return path
+
+
+def _gone(entry):
+    """Whether the game's folder is gone for good (uninstalled, moved, deleted) rather than out of reach: the folder
+    that held it is still there, which a library on an SD card taken out is not."""
+    install_dir = _install_dir(entry)
+    return not os.path.isdir(install_dir) and os.path.isdir(os.path.dirname(install_dir))
+
+
+def forget(manifest, appid):
+    """Drop a game whose folder is gone. Its Wine setting goes too when its prefix is still there and free; one left
+    behind only points opengl32 or d3d10 at a DLL that is no longer there, and Wine then takes its own."""
+    wine = manifest.entries[appid].get("wine")
+    if wine and not prefix_in_use(wine["prefix"]):
+        try:
+            remove_dll_override(wine["prefix"], wine["exe"], wine["dll"])
+        except OSError:
+            pass
+    del manifest.entries[appid]
+    manifest.save()
+
+
+def follow_moved(manifest, games, steam_root):
+    """Games whose folder is gone, checked against the library: one moved to another library (Steam takes our files
+    along) is followed there, one no longer in the library is forgotten; a game on an SD card that is out stays as it
+    is. Returns what changed, for the log."""
+    library = {g["appid"]: g for g in games}
+    changed = []
+    for appid, entry in list(manifest.entries.items()):
+        if os.path.isdir(entry["target_dir"]):
+            continue
+        game = library.get(appid)
+        if game and os.path.isfile(os.path.join(game["install_dir"], entry["exe"])):
+            entry["target_dir"] = os.path.dirname(os.path.join(game["install_dir"], entry["exe"]))
+            wine = entry.get("wine")
+            if wine and not os.path.isdir(wine["prefix"]):  # the prefix moved too, with our setting in it
+                prefix = wine_prefix(game, steam_root)
+                if prefix:
+                    wine["prefix"] = prefix
+                else:
+                    del entry["wine"]
+            manifest.save()
+            changed.append(f"{entry['name']} moved to {entry['target_dir']}")
+        elif not game and _gone(entry):
+            forget(manifest, appid)
+            changed.append(f"{entry['name']} is no longer installed")
+    return changed
 
 
 def loaded_since(entry, since):
