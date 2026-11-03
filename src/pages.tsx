@@ -88,7 +88,7 @@ export const ReshadePage: FC<{ state: State; working: boolean; run: Run }> = ({ 
           <ToggleField label="Use launch options" checked={settings.use_launch_options} disabled={working}
             description={settings.use_launch_options
               ? "You add ReShade's line to each game's launch options: turning a game on copies it, and the game's page has a Copy button. Nothing else is changed outside the game folder."
-              : "Off: no launch options needed. ReShade starts by itself; OpenGL and Direct3D 10 games get a Wine setting for their executable, made after the game's first start. Turn on if ReShade does not start in a game."}
+              : "Off: no launch options needed. ReShade starts by itself; OpenGL games (and Direct3D 10 when picked by hand) get a Wine setting for their executable, made after the game's first start. Turn on if ReShade does not start in a game."}
             onChange={on => run(() => setSetting("use_launch_options", on))} />
         </PanelSectionRow>
       </PanelSection>
