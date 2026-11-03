@@ -312,9 +312,12 @@ def _set_engine_ini(manifest, appid, entry, path, values):
         mode = os.stat(path).st_mode & 0o777
     except FileNotFoundError:
         data, mode = None, None
-    text = (data or b"").decode("utf-8-sig", "replace")
+    # written back as it was read: Unreal Engine saves a config with non-ASCII text in UTF-16, else UTF-8
+    encoding = ("utf-16" if (data or b"")[:2] in (b"\xff\xfe", b"\xfe\xff")
+                else "utf-8-sig" if (data or b"").startswith(b"\xef\xbb\xbf") else "utf-8")
+    text = (data or b"").decode(encoding, "replace")
     eol = "\r\n" if "\r\n" in text else "\n"
-    new = with_values(text.replace("\r\n", "\n"), values).replace("\n", eol).encode("utf-8")
+    new = with_values(text.replace("\r\n", "\n"), values).replace("\n", eol).encode(encoding)
     backup = path + BACKUP
     if data is not None:
         if os.path.lexists(backup) and sha256_file(backup) != hashlib.sha256(data).hexdigest():

@@ -9,7 +9,7 @@ import {
   updateReshade, updateShaders,
 } from "./api";
 import { settle } from "./result";
-import { ago, keepPage, NAME, okText, showText, versionLabel, warnText } from "./shared";
+import { ago, keepPage, NAME, okText, runLater, showText, versionLabel, warnText } from "./shared";
 import { ActionButton, confirmAction, infoRow, notify } from "./ui";
 import { resetWizard, Run } from "./wizard";
 
@@ -75,7 +75,7 @@ export const ReshadePage: FC<{ state: State; working: boolean; run: Run }> = ({ 
           <DropdownItem layout="below" childrenContainerWidth="max" label="Version" disabled={working} selectedOption={settings.version}
             description="Changing it moves every game to that version."
             rgOptions={["latest", ...reshade.versions].map(v => ({ data: v, label: versionLabel(v, reshade.versions[0]) }))}
-            onMenuWillOpen={keepPage} onChange={o => run(() => setVersion(o.data))} />
+            onMenuWillOpen={keepPage} onChange={o => runLater(() => setVersion(o.data))} />
         </PanelSectionRow>
         <PanelSectionRow>
           <ToggleField label="Add-on build" checked={settings.addon} disabled={working}

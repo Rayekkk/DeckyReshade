@@ -139,7 +139,8 @@ export const GamePage: FC<{ game: State["games"][number]; state: State; working:
       // the line to paste changes only with the API: copied when it is new to this game
       if (!why && on && state.settings.use_launch_options && (!info.enabled || info.api !== chosen))
         await copyLaunchOptions(game.name, chosen);
-      await load(exe);
+      // refused: the page keeps the API and mod picked, so trying again tries the same
+      await load(exe, why ? reno : "", !!why);
       setBusy(false);
       refresh();
     };

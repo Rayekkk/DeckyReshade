@@ -263,7 +263,8 @@ def download(mod, bits, folder, cancel=None):
         pass  # none yet
     new = path + ".new"  # a failed update keeps the copy that worked
     try:
-        dk_net.download(address, new, size, sha256, hosts=GITHUB_DOWNLOADS, cancel=cancel)
+        # an engine-wide mod is over 100 MB: the long deadline, as for ReShade's installer and shader packages
+        dk_net.download(address, new, size, sha256, hosts=GITHUB_DOWNLOADS, deadline=dk_net.MAX_DEADLINE, cancel=cancel)
     except dk_net.NetError as e:
         raise RenoDXError(f"The RenoDX mod could not be downloaded: {e}.") from e
     if (pe_info(new) or {}).get("bits") != bits:

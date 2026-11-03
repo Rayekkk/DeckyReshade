@@ -240,6 +240,7 @@ class Download(unittest.TestCase):
                           False))
         self.assertEqual(url, "https://github.com/clshortfuse/renodx/releases/download/snapshot/renodx-godofwar.addon64")
         self.assertEqual(kw["hosts"], X.GITHUB_DOWNLOADS)
+        self.assertEqual(kw["deadline"], dk_net.MAX_DEADLINE, "an engine-wide mod is over 100 MB")
 
     def test_the_newest_snapshot_already_here_is_not_downloaded_again(self):
         with GitHub(make_pe(64)) as github:

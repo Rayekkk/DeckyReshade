@@ -240,26 +240,41 @@ class Plugin:
     async def set_setting(self, key: str, value: bool) -> dict:
         if key not in ("addon", "use_launch_options") or not isinstance(value, bool):
             return dk_rpc.fail("Unknown setting.", self._state())
+        before = self.settings[key]
         try:
             await self._save_settings(**{key: value})
         except OSError as e:
             return self._settings_failed(e)
         if key == "addon" and self._installed() and value != self.release.get("addon", False):
-            return await self._job("Switching ReShade build…", self._switch_build, self.release["version"], value)
+            return await self._undo_if_failed(
+                await self._job("Switching ReShade build…", self._switch_build, self.release["version"], value),
+                **{key: before})
         return dk_rpc.ok(self._state())
+
+    async def _undo_if_failed(self, result, **before):
+        """A switch whose download failed (offline, busy) puts the setting back, so the panel shows what games use."""
+        if not result["ok"]:
+            try:
+                await self._save_settings(**before)
+            except OSError as e:
+                decky.logger.error(f"settings not put back: {e}")
+            result["state"] = self._state()
+        return result
 
     @rpc
     async def set_version(self, version: str) -> dict:
         """"latest" (kept up to date) or one of the known versions, which then stays until changed."""
         if version != "latest" and version not in reshade_release.VERSIONS:
             return dk_rpc.fail("That ReShade version is not offered.", self._state())
+        before = self.settings["version"]
         try:
             await self._save_settings(version=version)
         except OSError as e:
             return self._settings_failed(e)
         if not self._installed():
             return dk_rpc.ok(self._state())
-        return await self._job("Switching ReShade version…", self._apply_version)
+        return await self._undo_if_failed(await self._job("Switching ReShade version…", self._apply_version),
+                                          version=before)
 
     @rpc
     async def scan_games(self) -> dict:
@@ -444,6 +459,8 @@ class Plugin:
         return await self._job("Updating shaders…", self._update_shaders)
 
     def _remove_data(self):
+        if self.manifest.problem:  # which games still use the files is unknown: their ReShade.ini point at them
+            raise reshade_install.InstallError(self.manifest.problem)
         if self.manifest.entries:
             raise reshade_install.InstallError("Turn ReShade off in all games first; they still use these files.")
         for path in (self.reshade_root, self.shaders_root, self.renodx_root):
@@ -573,6 +590,13 @@ class Plugin:
                 await asyncio.to_thread(self.manifest.save)
             except Exception as e:
                 decky.logger.exception(f"enable {appid} failed")
+                # stopped half way (files already in the folder): the record says which add-ons, as the page does
+                if appid in self.manifest.entries:
+                    self.manifest.entries[appid].update(autohdr=bool(autohdr), renodx=renodx, renodx_file=renodx_file)
+                    try:
+                        await asyncio.to_thread(self.manifest.save)
+                    except (reshade_install.InstallError, OSError) as saved:
+                        decky.logger.warning(f"enable {appid}: record not saved: {saved}")
                 return dk_rpc.fail(_message(e))
         decky.logger.info(f"enable {appid} done, wine setting: {self.manifest.entries[appid].get('wine')}")
         return dk_rpc.ok()
@@ -670,6 +694,7 @@ class Plugin:
                        "missed sessions": e.get("missed", 0), "log": reshade_diag.reshade_log(e["target_dir"])}
             games.append((e["name"], details, reshade_diag.tail(os.path.join(e["target_dir"], reshade_install.LOG), 80)))
         text = reshade_diag.report(header, games, reshade_diag.tail(reshade_diag.plugin_log_path(decky), 400))
+        text = text.replace(_home().rstrip("/"), "~")  # a report is shared: no account name in its paths
         path = os.path.join(dk_update.downloads_dir(_home()), time.strftime("DeckyReshade-report-%Y%m%d-%H%M%S.txt"))
         dk_fs.write_atomic(path, text.encode("utf-8"), 0o644)
         return path

@@ -20,6 +20,7 @@ import _harness
 import dk_fs
 import dk_net
 import main
+import reshade_install
 import reshade_release
 import reshade_renodx
 import reshade_shaders
@@ -349,6 +350,30 @@ class Games(Base):
             self.assertEqual(os.listdir(config), [], "made here, so gone again")
         self.run_async(flow())
 
+    def test_a_switch_whose_download_fails_keeps_the_setting_games_use(self):
+        async def flow():
+            p = await self.start(setup=True)
+            with mock.patch.object(reshade_release, "fetch", side_effect=reshade_release.ReleaseError("offline")):
+                r = await p.set_version("6.5.1")
+                self.assertEqual((r["ok"], r["state"]["settings"]["version"]), (False, "latest"))
+                r = await p.set_setting("addon", False)
+                self.assertEqual((r["ok"], r["state"]["settings"]["addon"]), (False, True))
+            self.assertEqual(main._load_settings(p.settings_path)["version"], "latest", "and on disk")
+            self.assertTrue((await p.set_version("6.5.1"))["ok"], "online again: it switches")
+        self.run_async(flow())
+
+    def test_a_setup_stopped_half_way_still_records_its_mod(self):
+        async def flow():
+            p = await self.start(setup=True)
+            with mock.patch.object(reshade_install, "ini_text", side_effect=OSError(28, "No space left on device")):
+                r = await p.enable_game(70, "Game.exe", "dxgi", False, "God of War (2018)")
+            self.assertFalse(r["ok"])
+            self.assertTrue(os.path.exists(os.path.join(self.game_dir, "renodx-godofwar.addon64")))
+            self.assertEqual(p.manifest.entries[70]["renodx"], "God of War (2018)", "the page shows it as on")
+            self.assertEqual(await p.disable_game(70), {"ok": True, "kept": []})
+            self.assertFalse(os.path.exists(os.path.join(self.game_dir, "renodx-godofwar.addon64")))
+        self.run_async(flow())
+
     def test_a_renodx_list_saved_before_engine_mods_is_fetched_again(self):
         async def flow():
             os.makedirs(decky.DECKY_PLUGIN_RUNTIME_DIR, exist_ok=True)
@@ -381,7 +406,10 @@ class Games(Base):
             report = await p.save_report()
             self.assertEqual(os.path.dirname(report["path"]), os.path.join(decky.DECKY_USER_HOME, "Downloads"))
             with open(report["path"], encoding="utf-8") as f:
-                self.assertIn("Failed to compile x.fx", f.read())
+                text = f.read()
+            self.assertIn("Failed to compile x.fx", text)
+            self.assertNotIn(decky.DECKY_USER_HOME, text, "a shared report holds no account name")
+            self.assertIn(os.path.join("~", ".local", "share", "Steam"), text)
             # a game without ReShade: the log beside the executable the panel shows, never outside the game
             with open(os.path.join(self.emu_dir, "ReShade.log"), "w") as f:
                 f.write("old run")
@@ -515,6 +543,9 @@ class Data(Base):
             self.assertFalse(r["ok"])
             with open(os.path.join(decky.DECKY_PLUGIN_SETTINGS_DIR, "manifest.json")) as f:
                 self.assertEqual(f.read(), "{broken", "kept for repair, never written over")
+            # nor are the downloads removed: which games' ReShade.ini still point at them is unknown
+            self.assertFalse((await q.remove_data())["ok"])
+            self.assertTrue(q._installed())
         self.run_async(flow())
 
 

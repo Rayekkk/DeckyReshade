@@ -76,6 +76,15 @@ const Content: FC = () => {
     setBusy(false);
     return r;
   };
+  // a choice made in a dropdown menu, which Decky unmounts the panel for: run here, also when made meanwhile
+  useEffect(() => {
+    const listener = (call: Parameters<Run>[0]) => void run(call);
+    panel.onRun = listener;
+    const waiting = panel.later;
+    panel.later = null;
+    if (waiting) listener(waiting);
+    return () => { if (panel.onRun === listener) panel.onRun = null; };
+  }, []);
 
   const open = (next: Page, link: string) => {
     openers.current[next] = link;
@@ -250,7 +259,8 @@ export default definePlugin(() => {
       return;
     }
     const res = await settle(sessionEnded(n.unAppID));  // a backend restarting just answers ok: false
-    if (res.warning) notify("ReShade did not start", res.warning);
+    // ReShade ran but AutoHDR left the game in SDR, or ReShade did not start at all
+    if (res.warning) notify(res.loaded ? NAME : "ReShade did not start", res.warning);
   });
 
   return {

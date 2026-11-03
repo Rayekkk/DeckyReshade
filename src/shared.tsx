@@ -5,7 +5,7 @@
 import { ConfirmModal, Focusable, ScrollPanelGroup, showModal } from "@decky/ui";
 import { ReactNode } from "react";
 import { disableGame, enableGame, State, VERSION_NOTE } from "./api";
-import { settle } from "./result";
+import { Result, settle } from "./result";
 import { colors, notify } from "./ui";
 
 export const NAME = "DeckyReshade";
@@ -22,7 +22,9 @@ export const panel = {
   nav: null as { page: string | null; gameId: number | null; gameFromList: boolean } | null, resume: false,
   drafts: {} as Record<number, Choice>,
   pick: null as { appid: number; choice: Choice } | null, onPick: null as (() => void) | null,
+  later: null as Later | null, onRun: null as ((call: Later) => void) | null,
 };
+type Later = () => Promise<Result<State>>;
 
 /** Before a dropdown menu or a dialog: the panel comes back on this page. For DropdownItem's onMenuWillOpen. */
 export const keepPage = (show?: () => void) => { panel.resume = true; show?.(); };
@@ -34,8 +36,15 @@ export const takeResume = () => {
   if (!nav) {
     panel.drafts = {};
     panel.pick = null;
+    panel.later = null;
   }
   return nav;
+};
+
+/** A main-panel call from a dropdown (the ReShade version), run by the panel mounted now or the one mounted next. */
+export const runLater = (call: Later) => {
+  if (panel.onRun) panel.onRun(call);
+  else panel.later = call;
 };
 
 /** A game page's dropdown choice, for the page that is mounted now or the one mounted next. */

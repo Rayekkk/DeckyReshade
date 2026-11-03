@@ -228,6 +228,40 @@ test('an engine-wide RenoDX mod says what it is, and why when it cannot be insta
   assert.match(String(find(tree, 'ToggleField', 'Use the RenoDX mod').props.description), /needs steps for this game that DeckyReshade cannot take/);
 });
 
+test('the ReShade version picked in a menu outside the QAM is still applied, on the same page', async () => {
+  const h = panel();
+  let tree = await open(h, state());
+  find(tree, 'Field', 'ReShade version').props.onActivate();
+  tree = h.render();
+  const menu = find(tree, 'DropdownItem', 'Version');
+  menu.props.onMenuWillOpen(() => {});
+  h.unmount();  // Decky unmounts the panel while Steam shows the menu
+  menu.props.onChange({ data: '6.5.1' });
+  h.remount();
+  await settle();
+  h.render();
+  assert.deepEqual(h.calls.filter(c => c.name === 'set_version').map(c => c.args), [['6.5.1']]);
+  h.respond('get_state', ok(state()));
+  await settle();
+  assert.ok(find(h.render(), 'DropdownItem', 'Version'), 'back on the ReShade version page');
+});
+
+test('a session warning is titled by what happened: AutoHDR left in SDR is no "ReShade did not start"', async () => {
+  let lifetime;
+  const h = panel({ SteamClient: { Apps: {}, GameSessions: {
+    RegisterForAppLifetimeNotifications(fn) { lifetime = fn; return { unregister() {} }; } } } });
+  h.exports.default();
+  lifetime({ bRunning: false, unAppID: 70 });
+  await settle();
+  h.respond('session_ended', { ok: true, managed: true, loaded: true, warning: 'AutoHDR could not switch God of War to HDR.' });
+  await settle();
+  lifetime({ bRunning: false, unAppID: 70 });
+  await settle();
+  h.respond('session_ended', { ok: true, managed: true, loaded: false, warning: 'ReShade did not start in God of War twice in a row.' });
+  await settle();
+  assert.deepEqual(h.toasts.map(t => t.title), ['DeckyReshade', 'ReShade did not start']);
+});
+
 test('a game page: a failed read offers Try again, a game that cannot be supported only says why', async () => {
   const h = panel();
   let tree = await open(h, state());
@@ -277,12 +311,18 @@ test('a refused change says why, also on the page', async () => {
   let tree = await open(h, state());
   find(tree, 'Field', 'This game: Hades').props.onActivate();
   h.render();
-  h.respond('get_game', gameInfo({ enabled: false, renodx: { installed: '', auto: '', mod: null } }));
+  h.respond('get_game', gameInfo({ enabled: false, api: null, renodx: { installed: '', auto: '', mod: null } }));
   await settle();
+  find(h.render(), 'DropdownItem', 'Graphics API').props.onChange({ data: 'd3d11' });
+  h.render();
   find(h.render(), 'ToggleField', 'ReShade in this game').props.onChange(true);
   await settle();
   h.respond('enable_game', { ok: false, error: 'dxgi.dll already exists in the game folder' });
   await settle();
+  h.respond('get_game', gameInfo({ enabled: false, api: null, renodx: { installed: '', auto: '', mod: null } }));
+  await settle();
+  assert.equal(find(h.render(), 'DropdownItem', 'Graphics API').props.selectedOption, 'd3d11',
+    'refused: the API picked by hand stays, so trying again tries the same');
   assert.deepEqual(h.toasts.map(t => t.body), ['dxgi.dll already exists in the game folder']);
   await settle();
   tree = h.render();

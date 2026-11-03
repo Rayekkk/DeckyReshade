@@ -203,6 +203,18 @@ class UnrealEngineIni(unittest.TestCase):
         self.assertTrue(os.access(ini, os.W_OK))
         self.assertEqual(sorted(os.listdir(self.config)), ["Engine.ini"])
 
+    def test_a_utf16_engine_ini_stays_utf16(self):
+        own = "﻿[Core.System]\r\nPaths=../../Spielä\r\n".encode("utf-16-le")
+        ini = _file(os.path.join(self.config, "Engine.ini"), own)
+        self.enable()
+        with open(ini, "rb") as f:
+            text = f.read().decode("utf-16")
+        self.assertIn("Paths=../../Spielä\r\n", text)
+        self.assertIn("[SystemSettings]\r\nr.AllowHDR=1", text)
+        I.disable(self.manifest, 526870)
+        with open(ini, "rb") as f:
+            self.assertEqual(f.read(), own)
+
     def test_an_engine_ini_made_here_goes_and_one_changed_since_stays(self):
         os.makedirs(self.config)
         self.enable()
